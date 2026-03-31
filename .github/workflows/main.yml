@@ -1,0 +1,116 @@
+name: Main CI
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.12"
+  WORKSPACE_ARTIFACT: prepared-workspace
+
+jobs:
+  prepare-workspace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install project
+        run: uv sync --group test
+
+      - name: Upload prepared workspace
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.WORKSPACE_ARTIFACT }}
+          path: |
+            .venv
+            benchmark_inference
+            benchmark_workflows
+            src
+            pyproject.toml
+            uv.lock
+          retention-days: 1
+
+  install-and-test:
+    runs-on: ubuntu-latest
+    needs: prepare-workspace
+    timeout-minutes: 10
+    env:
+      BENCHOPT_DEBUG: 1
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download prepared workspace
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.WORKSPACE_ARTIFACT }}
+          path: .
+
+      - name: Use prepared virtual environment
+        run: echo "${GITHUB_WORKSPACE}/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Lint (black + ruff)
+        run: |
+          black --check benchmark_inference benchmark_workflows src/toolsbench
+          ruff check benchmark_inference benchmark_workflows src/toolsbench
+
+      - name: Discover benchmarks
+        run: |
+          benchopt info benchmark_inference/.
+          benchopt info benchmark_workflows/.
+
+      - name: Inference benchmark smoke test
+        run: |
+          benchopt run benchmark_inference/. \
+            --config benchmark_inference/configs/ci_smoke.yml \
+            --max-runs 1 \
+            --n-repetitions 1 \
+            --no-plot \
+            --no-html \
+            --no-display
+
+  benchmark-workflow:
+    runs-on: ubuntu-latest
+    needs: prepare-workspace
+    timeout-minutes: 10
+    env:
+      BENCHOPT_DEBUG: 1
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download prepared workspace
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.WORKSPACE_ARTIFACT }}
+          path: .
+
+      - name: Use prepared virtual environment
+        run: echo "${GITHUB_WORKSPACE}/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Workflow benchmark smoke test
+        run: |
+          benchopt run benchmark_workflows/. \
+            --max-runs 1 \
+            --n-repetitions 1 \
+            --no-plot \
+            --no-html \
+            --no-display

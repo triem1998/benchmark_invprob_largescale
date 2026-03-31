@@ -4,6 +4,7 @@ from benchopt import BaseDataset
 from deepinv.physics import GaussianNoise
 from deepinv.physics.blur import Blur, gaussian_blur
 
+
 class Dataset(BaseDataset):
     """Single-image blur dataset with a stream specification."""
 

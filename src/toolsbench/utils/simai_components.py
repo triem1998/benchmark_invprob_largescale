@@ -66,7 +66,9 @@ def _concat_payloads(payloads):
     if isinstance(first, list):
         return [_concat_payloads([p[i] for p in payloads]) for i in range(len(first))]
     if isinstance(first, tuple):
-        return tuple(_concat_payloads([p[i] for p in payloads]) for i in range(len(first)))
+        return tuple(
+            _concat_payloads([p[i] for p in payloads]) for i in range(len(first))
+        )
     raise TypeError(f"Unsupported payload type for batching: {type(first)}")
 
 
@@ -90,7 +92,9 @@ def _run_pnp_updates(
                 reconstruction = denoised
             else:
                 lam = float(pnp_cfg["denoiser_lambda_relaxation"])
-                alpha = (pnp_cfg["step_size"] * lam) / (1.0 + pnp_cfg["step_size"] * lam)
+                alpha = (pnp_cfg["step_size"] * lam) / (
+                    1.0 + pnp_cfg["step_size"] * lam
+                )
                 reconstruction = (1.0 - alpha) * reconstruction + alpha * denoised
             reconstruction = reconstruction.clamp(
                 pnp_cfg["min_pixel"],
@@ -153,7 +157,9 @@ def producer_component(
                     time.sleep(wait_s)
 
             y = _clone_payload(measurement_template)
-            x_true = _clone_payload(ground_truth_template) if include_ground_truth else None
+            x_true = (
+                _clone_payload(ground_truth_template) if include_ground_truth else None
+            )
             ds.stage_write(
                 packet_key(key_prefix, packet_id),
                 {
@@ -198,7 +204,9 @@ def pnp_consumer_component(
         physics_spec=physics_spec,
         compute_device=compute_device,
     )
-    denoiser = BoxBlurDenoiser(kernel_size=pnp_cfg["denoiser_kernel_size"]).to(compute_device)
+    denoiser = BoxBlurDenoiser(kernel_size=pnp_cfg["denoiser_kernel_size"]).to(
+        compute_device
+    )
     prior = PnP(denoiser=denoiser)
     data_fidelity = L2()
 

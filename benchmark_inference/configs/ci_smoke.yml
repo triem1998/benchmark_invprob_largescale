@@ -1,0 +1,25 @@
+# Lightweight CI configuration for inference benchmark smoke tests.
+objective:
+  - reconstruction_objective
+
+dataset:
+  - simulated:
+      image_size: 128
+      num_operators: 1
+      noise_level: 0.01
+      seed: 42
+
+solver:
+  - PnP:
+      denoiser: drunet
+      denoiser_sigma: 0.01
+      step_size: 0.1
+      init_method: ["zeros"]
+      distribute_physics, distribute_denoiser, patch_size, overlap, max_batch_size: [
+        [false, false, 0, 0, 0],
+      ]
+
+max-runs: 1
+n-repetitions: 1
+plot: false
+html: false

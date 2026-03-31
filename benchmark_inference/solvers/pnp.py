@@ -70,7 +70,7 @@ def initialize_reconstruction(
         return torch.zeros(signal_shape, device=device)
 
     elif method == "pseudo_inverse":
-        #x_init = operator.A_dagger(measurements)
+        # x_init = operator.A_dagger(measurements)
         x_init = operator.A_adjoint(measurements)
         return x_init
 
@@ -78,7 +78,8 @@ def initialize_reconstruction(
         raise ValueError(
             f"Unknown initialization method: {method}. Use 'zeros' or 'pseudo_inverse'"
         )
-    
+
+
 def normalize(x, min=0.0, max=1.0):
     """Normalize tensor to [min, max] range."""
     x_min = x.min()
@@ -498,10 +499,8 @@ class Solver(BaseSolver):
             and per-step metrics (gradient and denoise timing/memory)
         """
         with torch.no_grad():
-            reconstruction = (
-                self.reconstruction - self.norm_min
-            ) / self.norm_scale
-            #reconstruction = reconstruction.clamp(0.0, 1.0)
+            reconstruction = (self.reconstruction - self.norm_min) / self.norm_scale
+            # reconstruction = reconstruction.clamp(0.0, 1.0)
         result = dict(reconstruction=reconstruction, name=self.name)
 
         # Add GPU memory snapshot

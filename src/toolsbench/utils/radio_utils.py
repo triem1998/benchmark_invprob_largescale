@@ -10,11 +10,7 @@ from astropy.coordinates import (
     SkyCoord,
     EarthLocation,
     AltAz,
-    Longitude,
-    Angle,
-    Latitude,
     ICRS,
-    FK5,
 )
 from astropy.time import Time
 import astropy.units as u
@@ -24,9 +20,10 @@ MEERKAT_LOCATION = EarthLocation(
     lat=-30.83 * u.deg, lon=21.33 * u.deg, height=1195.0 * u.m
 )
 
+
 def load_and_resize_image(image_path, image_size):
     """Load and resize m1_n.fits image.
-    
+
     Returns
     -------
     np.ndarray
@@ -51,10 +48,10 @@ def load_and_resize_image(image_path, image_size):
         raise ValueError(
             f"Unexpected FITS image shape {img.shape}, expected 2D or 3D after squeeze."
         )
-    
+
     c, h, w = img.shape
     resized_img = img.copy()
-    
+
     if h != image_size or w != image_size:
         zoom_factors = (1, image_size / h, image_size / w)
         resized_img = zoom(img, zoom_factors, order=3)
@@ -62,20 +59,22 @@ def load_and_resize_image(image_path, image_size):
 
     return np.ascontiguousarray(resized_img, dtype=np.float32)
 
+
 def load_new_header(fits_file, image_size):
     orig_header = fits.getheader(fits_file)
-    orig_naxis1 = int(orig_header.get('NAXIS1', image_size))
-    orig_naxis2 = int(orig_header.get('NAXIS2', image_size))
+    orig_naxis1 = int(orig_header.get("NAXIS1", image_size))
+    orig_naxis2 = int(orig_header.get("NAXIS2", image_size))
     new_header = orig_header.copy()
     # Scale pixel size: new pixel covers more angle (fewer pixels, same FOV)
-    if 'CDELT1' in new_header:
-        new_header['CDELT1'] = float(orig_header['CDELT1']) * orig_naxis1 / image_size
-    if 'CDELT2' in new_header:
-        new_header['CDELT2'] = float(orig_header['CDELT2']) * orig_naxis2 / image_size
+    if "CDELT1" in new_header:
+        new_header["CDELT1"] = float(orig_header["CDELT1"]) * orig_naxis1 / image_size
+    if "CDELT2" in new_header:
+        new_header["CDELT2"] = float(orig_header["CDELT2"]) * orig_naxis2 / image_size
     # Move reference pixel to the centre of the new image
-    new_header['CRPIX1'] = (image_size + 1) / 2.0
-    new_header['CRPIX2'] = (image_size + 1) / 2.0
+    new_header["CRPIX1"] = (image_size + 1) / 2.0
+    new_header["CRPIX2"] = (image_size + 1) / 2.0
     return new_header
+
 
 '''def get_meerkat_visibilities_path(
     image: np.ndarray,
@@ -107,6 +106,7 @@ def load_new_header(fits_file, image_size):
     vis_path = cache_dir / f"{full_hash}.ms"
     return vis_path'''
 
+
 def get_meerkat_visibilities_path(
     image: np.ndarray,
     cache_dir: Path,
@@ -123,19 +123,21 @@ def get_meerkat_visibilities_path(
     """
     # Create a unique hash for the simulation parameters
     params = {
-        'fits_name': fits_name,
-        'number_of_time_steps': number_of_time_steps,
-        'start_frequency_hz': start_frequency_hz,
-        'end_frequency_hz': end_frequency_hz,
-        'number_of_channels': number_of_channels,
-        'random_position': random_position,
-        'imaging_npixel': imaging_npixel
+        "fits_name": fits_name,
+        "number_of_time_steps": number_of_time_steps,
+        "start_frequency_hz": start_frequency_hz,
+        "end_frequency_hz": end_frequency_hz,
+        "number_of_channels": number_of_channels,
+        "random_position": random_position,
+        "imaging_npixel": imaging_npixel,
     }
     params_str = str(sorted(params.items()))
     params_hash = hashlib.md5(params_str.encode()).hexdigest()
 
     if hasattr(image, "cpu") and hasattr(image, "numpy"):
-        img_bytes = np.ascontiguousarray(image.cpu().numpy(), dtype=np.float32).tobytes()
+        img_bytes = np.ascontiguousarray(
+            image.cpu().numpy(), dtype=np.float32
+        ).tobytes()
     else:
         img_bytes = np.ascontiguousarray(image, dtype=np.float32).tobytes()
 
@@ -145,8 +147,10 @@ def get_meerkat_visibilities_path(
     vis_path = cache_dir / f"{full_hash}.ms"
     return vis_path
 
+
 def load_object(dct):
     return types.SimpleNamespace(**dct)
+
 
 def load_config(config_path, section=None):
     with open(config_path, "r") as f:
@@ -159,6 +163,7 @@ def load_config(config_path, section=None):
         return getattr(cfg, section)
 
     return cfg
+
 
 def is_source_visible(
     ra_deg,
@@ -203,6 +208,7 @@ def is_source_visible(
             return False
 
     return True
+
 
 def draw_random_pointing(
     time: Time,
@@ -294,6 +300,7 @@ def draw_random_pointing(
         f"Could not find valid pointing within elevation contour after {max_attempts} attempts. "
         f"Try increasing max_attempts or reducing min_elevation_deg."
     )
+
 
 def get_cellsize_from_fits_wcs(fits_file: Path) -> float:
     """Return pixel angular size (radians/pixel) from FITS WCS."""

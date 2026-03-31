@@ -31,9 +31,26 @@ radio = [
     "python-casacore",
     "torchkbnufft",
 ]
+docs = [
+    "sphinx",
+    "sphinx-rtd-theme",
+    "sphinx-gallery",
+]
+
+[dependency-groups]
+test = [
+    "black",
+    "ruff",
+]
 
 [project.scripts]
 toolsbench = "toolsbench:main"
+
+[tool.black]
+target-version = ["py312"]
+
+[tool.ruff]
+target-version = "py312"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/toolsbench"]

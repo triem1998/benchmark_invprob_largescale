@@ -7,6 +7,7 @@ including visualization and data loading helpers.
 import math
 from pathlib import Path
 import matplotlib.pyplot as plt
+
 try:
     import torch
     from deepinv.utils.demo import download_example, load_image
@@ -219,7 +220,7 @@ def load_cached_example(name, cache_dir=None, **kwargs):
         return load_image(str(cached_file), **kwargs)
 
 
-def create_drunet_denoiser(ground_truth_shape, device='cpu', dtype=None):
+def create_drunet_denoiser(ground_truth_shape, device="cpu", dtype=None):
     """Create a DRUNet denoiser appropriate for the given ground truth shape.
 
     Automatically detects whether to use:
