@@ -1,3 +1,11 @@
+## Benchmarks
+benchmark_*/data/
+benchmark_*/outputs/
+
+
+## Deepinv
+__cache__/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

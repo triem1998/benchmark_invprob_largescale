@@ -1,0 +1,46 @@
+[project]
+name = "toolsbench"
+version = "0.1.0"
+description = "Shared utilities and benchmark modules for large-scale inverse-problem experiments."
+readme = "README.md"
+authors = [
+    { name = "Benoît Malezieux", email = "benoit.mx2010@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "benchopt>=1.8",
+    "numpy",
+    "torch",
+    "torchvision",
+    "matplotlib",
+    "plotly",
+    "pandas",
+    "pyyaml",
+    "astropy",
+    "scipy",
+    "pillow",
+    "requests",
+    "submitit",
+    "typing-extensions",
+    "deepinv @ git+https://github.com/deepinv/deepinv.git@main",
+    "simai-bench @ git+https://github.com/argonne-lcf/SimAI-Bench.git",
+]
+
+[project.optional-dependencies]
+radio = [
+    "python-casacore",
+    "torchkbnufft",
+]
+
+[project.scripts]
+toolsbench = "toolsbench:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/toolsbench"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,0 +1,479 @@
+{
+ "Dataset": [
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "datasets.highres_color_image",
+   "module_short": "datasets.highres_color_image",
+   "name": "Dataset"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "datasets",
+   "module_short": "datasets",
+   "name": "Dataset"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "benchopt.base",
+   "module_short": "benchopt",
+   "name": "BaseDataset"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "benchopt",
+   "module_short": "benchopt",
+   "name": "BaseDataset"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "benchopt.utils.parametrized_name_mixin",
+   "module_short": "benchopt.utils.parametrized_name_mixin",
+   "name": "ParametrizedNameMixin"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "benchopt.utils",
+   "module_short": "benchopt.utils",
+   "name": "ParametrizedNameMixin"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "benchopt",
+   "module_short": "benchopt",
+   "name": "ParametrizedNameMixin"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "benchopt.utils.dependencies_mixin",
+   "module_short": "benchopt.utils.dependencies_mixin",
+   "name": "DependenciesMixin"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "benchopt.utils",
+   "module_short": "benchopt.utils",
+   "name": "DependenciesMixin"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "benchopt",
+   "module_short": "benchopt",
+   "name": "DependenciesMixin"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "abc",
+   "module_short": "abc",
+   "name": "ABC"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "datasets.highres_color_image",
+   "module_short": "datasets.highres_color_image",
+   "name": "Dataset"
+  }
+ ],
+ "Path": [
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "Path"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PurePath"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "Path"
+  }
+ ],
+ "Path.cwd": [
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "Path.cwd"
+  },
+  {
+   "is_class": true,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PurePath.cwd"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib.Path",
+   "module_short": "pathlib.Path",
+   "name": "cwd"
+  }
+ ],
+ "bench_config.get_data_path": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "builtins",
+   "module_short": "builtins",
+   "name": "function"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "benchopt.config",
+   "module_short": "benchopt.config",
+   "name": "get_data_path"
+  }
+ ],
+ "cmd": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "builtins",
+   "module_short": "builtins",
+   "name": "list"
+  }
+ ],
+ "config_content": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "builtins",
+   "module_short": "builtins",
+   "name": "dict"
+  }
+ ],
+ "config_path": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PosixPath"
+  }
+ ],
+ "config_path.name": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PosixPath.name"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "Path.name"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PurePosixPath.name"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PurePath.name"
+  }
+ ],
+ "current": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PosixPath"
+  }
+ ],
+ "current.parent": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PosixPath.parent"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "Path.parent"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PurePosixPath.parent"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PurePath.parent"
+  }
+ ],
+ "cwd": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PosixPath"
+  }
+ ],
+ "data": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "builtins",
+   "module_short": "builtins",
+   "name": "dict"
+  }
+ ],
+ "dataset_params": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "builtins",
+   "module_short": "builtins",
+   "name": "dict"
+  }
+ ],
+ "dataset_params.items": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "builtins",
+   "module_short": "builtins",
+   "name": "builtin_function_or_method"
+  }
+ ],
+ "ds": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "datasets.highres_color_image",
+   "module_short": "datasets.highres_color_image",
+   "name": "Dataset"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "datasets",
+   "module_short": "datasets",
+   "name": "Dataset"
+  }
+ ],
+ "ds.get_data": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "datasets.highres_color_image",
+   "module_short": "datasets.highres_color_image",
+   "name": "Dataset.get_data"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "datasets",
+   "module_short": "datasets",
+   "name": "Dataset.get_data"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "benchopt.base",
+   "module_short": "benchopt",
+   "name": "BaseDataset.get_data"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "benchopt",
+   "module_short": "benchopt",
+   "name": "BaseDataset.get_data"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "benchopt.utils.parametrized_name_mixin",
+   "module_short": "benchopt.utils.parametrized_name_mixin",
+   "name": "ParametrizedNameMixin.get_data"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "benchopt.utils",
+   "module_short": "benchopt.utils",
+   "name": "ParametrizedNameMixin.get_data"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "benchopt",
+   "module_short": "benchopt",
+   "name": "ParametrizedNameMixin.get_data"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "benchopt.utils.dependencies_mixin",
+   "module_short": "benchopt.utils.dependencies_mixin",
+   "name": "DependenciesMixin.get_data"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "benchopt.utils",
+   "module_short": "benchopt.utils",
+   "name": "DependenciesMixin.get_data"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "benchopt",
+   "module_short": "benchopt",
+   "name": "DependenciesMixin.get_data"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "abc",
+   "module_short": "abc",
+   "name": "ABC.get_data"
+  }
+ ],
+ "f": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "_io",
+   "module_short": "_io",
+   "name": "TextIOWrapper"
+  }
+ ],
+ "gt": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "torch",
+   "module_short": "torch",
+   "name": "Tensor"
+  }
+ ],
+ "key": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "builtins",
+   "module_short": "builtins",
+   "name": "str"
+  }
+ ],
+ "meas": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "torch",
+   "module_short": "torch",
+   "name": "Tensor"
+  }
+ ],
+ "plot": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "builtins",
+   "module_short": "builtins",
+   "name": "function"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "deepinv.utils.plotting",
+   "module_short": "deepinv.utils",
+   "name": "plot"
+  }
+ ],
+ "project_root": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "pathlib",
+   "module_short": "pathlib",
+   "name": "PosixPath"
+  }
+ ],
+ "sys.path.insert": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "builtins",
+   "module_short": "builtins",
+   "name": "builtin_function_or_method"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "sys.path",
+   "module_short": "sys.path",
+   "name": "insert"
+  }
+ ],
+ "val": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "builtins",
+   "module_short": "builtins",
+   "name": "float"
+  }
+ ],
+ "yaml.safe_load": [
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "builtins",
+   "module_short": "builtins",
+   "name": "function"
+  },
+  {
+   "is_class": false,
+   "is_explicit": false,
+   "module": "benchopt.config.yaml",
+   "module_short": "benchopt.config.yaml",
+   "name": "safe_load"
+  }
+ ]
+}
