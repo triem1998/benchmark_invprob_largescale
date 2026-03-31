@@ -33,6 +33,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.WORKSPACE_ARTIFACT }}
+          include-hidden-files: true
           path: |
             .venv
             benchmark_inference
