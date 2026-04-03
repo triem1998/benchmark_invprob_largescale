@@ -1,0 +1,30 @@
+objective:
+  - reconstruction_objective
+
+# Dataset
+dataset:
+  - tomography_3d_train:
+      num_proj: 30
+      max_train_samples: 2
+      max_val_samples: 1
+      num_operators: 16 
+
+# Solver
+solver:
+  - UnrolledPnP:
+      denoiser: drunet
+      n_iter: 2
+      init_stepsize: 0.9
+      denoiser_sigma: 0.03
+      lambda_relaxation: true
+      learning_rate: 1e-5
+      model_learning_rate: 1e-5
+      operator_norm: 1.0
+      slurm_gres, slurm_ntasks_per_node, slurm_nodes, distribute_physics, distribute_denoiser, patch_size, overlap, max_batch_size: [
+        ["gpu:4", 4, 4, true, true, [128, 128, 128], [16, 16, 16], 1],   
+      ]   
+
+
+# Run parameters
+max-runs: 2
+n-repetitions: 1
