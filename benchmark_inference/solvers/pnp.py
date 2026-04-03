@@ -11,84 +11,12 @@ from deepinv.utils.tensorlist import TensorList
 
 from toolsbench.utils import create_drunet_denoiser
 from toolsbench.utils.gpu_metrics import GPUMetricsTracker, save_result_per_rank
-
-
-def compute_step_size_from_operator(
-    operator: Physics,
-    ground_truth: torch.Tensor,
-) -> float:
-    """
-    Compute step size from Lipschitz constant of operator.
-
-    Args:
-        operator: Physics operator (can be stacked or distributed)
-        ground_truth: Ground truth tensor (used for creating example signal)
-        ctx: Optional distributed context for synchronization
-
-    Returns:
-        Step size (1 / lipschitz_constant)
-    """
-    with torch.no_grad():
-        # Create example signal for norm computation
-        x_example = torch.zeros_like(
-            ground_truth, device=ground_truth.device, dtype=ground_truth.dtype
-        )
-
-        # Compute Lipschitz constant
-        lipschitz_constant = operator.compute_norm(x_example, local_only=False)
-
-        return 1.0 / lipschitz_constant if lipschitz_constant > 0 else 1.0
-
-
-def initialize_reconstruction(
-    signal_shape: tuple,
-    operator: Physics,
-    measurements,
-    device: torch.device,
-    method: str = "pseudo_inverse",
-) -> torch.Tensor:
-    """
-    Initialize reconstruction signal.
-
-    For pseudo-inverse initialization:
-        x_0 = A^dagger y
-
-    where A^dagger is the adjoint/pseudo-inverse of the operator.
-    For stacked operators, this is handled automatically.
-
-    Args:
-        signal_shape: Shape of the signal to initialize
-        operator: Physics operator (can be stacked or distributed)
-        measurements: Measurements (TensorList for stacked physics)
-        device: Device to create tensor on
-        method: Initialization method ('zeros' or 'pseudo_inverse')
-
-    Returns:
-        Initialized reconstruction tensor
-    """
-    if method == "zeros":
-        return torch.zeros(signal_shape, device=device)
-
-    elif method == "pseudo_inverse":
-        # x_init = operator.A_dagger(measurements)
-        x_init = operator.A_adjoint(measurements)
-        return x_init
-
-    else:
-        raise ValueError(
-            f"Unknown initialization method: {method}. Use 'zeros' or 'pseudo_inverse'"
-        )
-
-
-def normalize(x, min=0.0, max=1.0):
-    """Normalize tensor to [min, max] range."""
-    x_min = x.min()
-    x_max = x.max()
-    if x_max > x_min:
-        x_norm = (x - x_min) / (x_max - x_min)  # Normalize to [0, 1]
-        return x_norm * (max - min) + min  # Scale to [min, max]
-    else:
-        return torch.full_like(x, min)  # If constant, return min value
+from toolsbench.utils.solver_utils import (
+    compute_step_size_from_operator,
+    initialize_reconstruction,
+    normalize_to_unit,
+    denormalize_from_unit,
+)
 
 
 class Solver(BaseSolver):
@@ -118,6 +46,7 @@ class Solver(BaseSolver):
         "overlap": [32],
         "max_batch_size": [0],
         "init_method": ["pseudo_inverse"],
+        "norm_strategy": ["clip"],
         "slurm_nodes": [1],
         "slurm_ntasks_per_node": [1],
         "slurm_gres": ["gpu:1"],
@@ -312,7 +241,6 @@ class Solver(BaseSolver):
             physics: Physics operator (can be stacked or distributed)
             measurements: Measurements
             device: Device to use
-            ctx: Optional distributed context
 
         Returns:
             Initialized reconstruction tensor
@@ -372,21 +300,44 @@ class Solver(BaseSolver):
 
                 # ===== DENOISING STEP =====
                 with self.gpu_tracker.track_step("denoise"):
-                    x_01 = (self.reconstruction - self.norm_min) / self.norm_scale
-
-                    # Denoiser (DRUNet always receives and returns values in [0, 1]).
-                    if self.denoiser_lambda_relaxation is None:
-                        x_01 = prior.prox(x_01, sigma_denoiser=self.denoiser_sigma)
-                    else:
-                        x_01_denoised = prior.prox(
-                            x_01, sigma_denoiser=self.denoiser_sigma
+                    if self.norm_strategy == "dynamic":
+                        # Normalize to [0,1] using fixed stats from initialization,
+                        # denoise, then map back to physical domain.
+                        x_01 = (self.reconstruction - self.norm_min) / self.norm_scale
+                        if self.denoiser_lambda_relaxation is None:
+                            x_01 = prior.prox(x_01, sigma_denoiser=self.denoiser_sigma)
+                        else:
+                            x_01_denoised = prior.prox(
+                                x_01, sigma_denoiser=self.denoiser_sigma
+                            )
+                            lamda = self.denoiser_lambda_relaxation
+                            alpha = (step_size * lamda) / (1 + step_size * lamda)
+                            x_01 = (1 - alpha) * x_01 + alpha * x_01_denoised
+                        self.reconstruction = denormalize_from_unit(
+                            x_01, self.norm_min, self.norm_scale
                         )
-                        lamda = self.denoiser_lambda_relaxation
-                        alpha = (step_size * lamda) / (1 + step_size * lamda)
-                        x_01 = (1 - alpha) * x_01 + alpha * x_01_denoised
-
-                    # Map back to physical domain using the same FIXED constants.
-                    self.reconstruction = x_01 * self.norm_scale + self.norm_min
+                    else:
+                        # "clip" strategy: work directly in physical domain and
+                        # clamp to clip_range after denoising.
+                        if self.denoiser_lambda_relaxation is None:
+                            self.reconstruction = prior.prox(
+                                self.reconstruction, sigma_denoiser=self.denoiser_sigma
+                            )
+                        else:
+                            x_denoised = prior.prox(
+                                self.reconstruction, sigma_denoiser=self.denoiser_sigma
+                            )
+                            lamda = self.denoiser_lambda_relaxation
+                            alpha = (step_size * lamda) / (1 + step_size * lamda)
+                            self.reconstruction = (
+                                1 - alpha
+                            ) * self.reconstruction + alpha * x_denoised
+                        if self.clip_range is not None:
+                            self.reconstruction = torch.clamp(
+                                self.reconstruction,
+                                self.clip_range[0],
+                                self.clip_range[1],
+                            )
 
                 # Synchronize all CUDA operations and distributed processes
                 # This ensures accurate timing measurements
@@ -461,14 +412,19 @@ class Solver(BaseSolver):
             physics, measurement, self.device
         )
         with torch.no_grad():
-            self.norm_min = self.reconstruction.min().item()
-            self.norm_scale = max(
-                (self.reconstruction.max() - self.reconstruction.min()).item(), 1e-10
-            )
-        print(
-            f"Reconstruction initialized. "
-            f"Physical range: [{self.norm_min:.4g}, {self.norm_min + self.norm_scale:.4g}]"
-        )
+            if self.norm_strategy == "dynamic":
+                _, self.norm_min, self.norm_scale = normalize_to_unit(
+                    self.reconstruction
+                )
+                print(
+                    f"Reconstruction initialized (dynamic norm). "
+                    f"Physical range: [{self.norm_min:.4g}, "
+                    f"{self.norm_min + self.norm_scale:.4g}]"
+                )
+            else:
+                self.norm_min = 0.0
+                self.norm_scale = 1.0
+                print("Reconstruction initialized (clip strategy).")
 
         # Synchronize before capturing initial state
         if self.device.type == "cuda":
@@ -496,11 +452,13 @@ class Solver(BaseSolver):
 
         Returns:
             dict: Dictionary with 'reconstruction' key, GPU memory snapshot,
-            and per-step metrics (gradient and denoise timing/memory)
+            and per-step metrics (gradient and denoise timing/memory).
         """
         with torch.no_grad():
-            reconstruction = (self.reconstruction - self.norm_min) / self.norm_scale
-            # reconstruction = reconstruction.clamp(0.0, 1.0)
+            if self.norm_strategy == "dynamic":
+                reconstruction = (self.reconstruction - self.norm_min) / self.norm_scale
+            else:
+                reconstruction = self.reconstruction
         result = dict(reconstruction=reconstruction, name=self.name)
 
         # Add GPU memory snapshot

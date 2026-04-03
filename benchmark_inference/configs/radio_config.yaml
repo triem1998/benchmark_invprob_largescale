@@ -14,7 +14,8 @@ solver:
       denoiser_sigma: [0.2]
       distribute_physics: False
       distribute_denoiser: False
-      init_method: 'pseudo_inverse'
+      init_method: ["adjoint"]
+      norm_strategy: ["dynamic"]  
       step_size_scale: [0.01]
       slurm_gres, slurm_ntasks_per_node, distribute_physics, distribute_denoiser, patch_size, denoiser_sigma, denoiser_lambda_relaxation: [
         ["gpu:0", 4, true, true, [512], 0.1, 0.05]

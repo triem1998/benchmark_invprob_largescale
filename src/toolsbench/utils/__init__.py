@@ -4,6 +4,13 @@ This module provides shared utilities for datasets, solvers, and objectives,
 including visualization and data loading helpers.
 """
 
+from .solver_utils import (
+    compute_step_size_from_operator as compute_step_size_from_operator,
+    initialize_reconstruction as initialize_reconstruction,
+    normalize_to_unit as normalize_to_unit,
+    denormalize_from_unit as denormalize_from_unit,
+)
+
 import math
 from pathlib import Path
 import matplotlib.pyplot as plt
