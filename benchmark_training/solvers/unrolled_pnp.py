@@ -495,6 +495,13 @@ class Solver(BaseSolver):
                 )
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+                # Project trainable parameters to valid ranges after each optimizer step.
+                with torch.no_grad():
+                    for s in self.model.params_algo["stepsize"]:
+                        s.clamp_(min=1e-8)
+                    if self.lambda_relaxation:
+                        for b in self.model.params_algo["beta"]:
+                            b.clamp_(0.0, 1.0)
 
         mean_psnr = float(torch.tensor(psnr_vals).mean()) if psnr_vals else 0.0
         mean_loss = float(sum(loss_vals) / len(loss_vals)) if loss_vals else 0.0
@@ -564,14 +571,6 @@ class Solver(BaseSolver):
             # Run one epoch
             train_psnr, epoch_loss = self._train_epoch()
             val_psnr = self._eval_loop(self.val_dataloader, cache_first_batch=True)
-
-            # Clamp trainable parameters to valid ranges.
-            with torch.no_grad():
-                for s in self.model.params_algo["stepsize"]:
-                    s.clamp_(min=1e-8)
-                if self.lambda_relaxation:
-                    for b in self.model.params_algo["beta"]:
-                        b.clamp_(0.0, 1.0)
 
             # Advance profiler schedule
             if self.profiler is not None:

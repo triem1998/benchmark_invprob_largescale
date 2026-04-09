@@ -20,7 +20,6 @@ solver:
       lambda_relaxation: true
       learning_rate: 1e-4
       model_learning_rate: 1e-4
-      operator_norm: 1.0
       grad_accumulation_steps: 12
       slurm_gres, slurm_ntasks_per_node, slurm_nodes,distribute_model, patch_size, overlap, max_batch_size: [
         ["gpu:4", 4, 4, true, [128, 128, 128], [16, 16, 16], 1],   
