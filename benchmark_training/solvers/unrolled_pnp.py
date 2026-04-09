@@ -6,15 +6,19 @@ from pathlib import Path
 
 import torch
 import torch.profiler as prof
-import deepinv as dinv
 from benchopt import BaseSolver
 from deepinv.distributed import DistributedContext, distribute
 from deepinv.loss.metric import PSNR
 from deepinv.optim.data_fidelity import L2
 from deepinv.optim.prior import PnP
 from deepinv.optim import PGD
+from deepinv.utils.tensorlist import TensorList
 
-from toolsbench.utils import create_drunet_denoiser
+from toolsbench.utils import (
+    create_drunet_denoiser,
+    save_training_curves,
+    save_reconstruction_figure,
+)
 
 
 class Solver(BaseSolver):
@@ -39,8 +43,7 @@ class Solver(BaseSolver):
         "denoiser_sigma": [0.05],
         "learning_rate": [1e-5],
         "model_learning_rate": [1e-5],
-        "distribute_physics": [False],
-        "distribute_denoiser": [False],
+        "distribute_model": [True],
         "torch_compile": [False],
         "patch_size": [128],
         "overlap": [32],
@@ -55,6 +58,8 @@ class Solver(BaseSolver):
         "name_prefix": ["unrolled_pnp"],
         "profile_dir": ["tb_profiles"],
         "operator_norm": [1.0],
+        # Set to k * len(num_projs) (e.g. 3k) so each optimizer update sees all configs.
+        "grad_accumulation_steps": [1],
     }
 
     def set_objective(
@@ -68,13 +73,23 @@ class Solver(BaseSolver):
         max_pixel=1.0,
         operator_norm=1.0,
     ):
-        """Set the objective from the dataset."""
+        """Set the objective from the dataset.
+
+        `physics` and `num_operators` may be dicts keyed by num_proj (multi-config)
+        or plain values (single-config, backward compatible).
+        """
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
-        self.physics = physics
+        # Normalise to dict form so _run_with_context and _get_physics
+        # have a single uniform code path for both single- and multi-config datasets.
+        if isinstance(physics, dict):
+            self.physics = physics
+            self.num_operators = num_operators  # dict {num_proj: int}
+        else:
+            self.physics = {None: physics}
+            self.num_operators = {None: num_operators}
         self.ground_truth_shape = ground_truth_shape
-        self.num_operators = num_operators
-        self.clip_range = (min_pixel, max_pixel)
+        self.min_pixel = float(min_pixel)
         # Dataset-provided operator norm (overridden by solver parameter if set)
         self._dataset_operator_norm = float(operator_norm)
 
@@ -166,32 +181,10 @@ class Solver(BaseSolver):
         # so the optimizer can access them regardless of wrapping.
         denoiser_params = list(denoiser.parameters())
 
-        # Distribute denoiser if requested
-        if self.distribute_denoiser:
-            denoiser = distribute(
-                denoiser,
-                ctx,
-                patch_size=self.patch_size,
-                overlap=self.overlap,
-                tiling_dims=(
-                    (-3, -2, -1) if len(self.ground_truth_shape) == 5 else (-2, -1)
-                ),
-                max_batch_size=self.max_batch_size,
-                checkpoint_batches=self.checkpoint_batches,
-            )
+        # distribute data fidelity separately
+        data_fidelity = distribute(L2(), ctx)
 
-        # Optionally compile denoiser
-        if self.torch_compile:
-            denoiser = torch.compile(denoiser)
-
-        # Create distributed data fidelity
-        data_fidelity = L2()
-        data_fidelity = distribute(data_fidelity, ctx)
-
-        if self.torch_compile:
-            data_fidelity = torch.compile(data_fidelity)
-
-        # Build PnP prior with (distributed) denoiser
+        # Build PnP prior with plain denoiser
         prior = PnP(denoiser=denoiser)
 
         # Effective step size: init_stepsize / operator_norm
@@ -221,6 +214,21 @@ class Solver(BaseSolver):
             prior=prior,
             unfold=True,
         )
+
+        # Distribute the whole model as one unit.
+        if self.distribute_model:
+            model = distribute(
+                model,
+                ctx,
+                patch_size=self.patch_size,
+                overlap=self.overlap,
+                max_batch_size=self.max_batch_size,
+                checkpoint_batches=self.checkpoint_batches,
+            )
+
+        # Optionally compile the (distributed) model
+        if self.torch_compile:
+            model = torch.compile(model)
 
         return model, denoiser_params
 
@@ -264,33 +272,21 @@ class Solver(BaseSolver):
                     f"[profiler] traces will be written to {profile_path / f'rank{rank}'}"
                 )
 
-        # Setup physics - always use distribute() for consistency
-        physics = distribute(
-            self.physics,
-            ctx,
-            num_operators=self.num_operators,
-            type_object="linear_physics",
-            reduction="mean",
-        )
+        # Setup physics — build one distributed physics per config key.
+        self.distributed_physics = {
+            key: distribute(
+                factory,
+                ctx,
+                num_operators=self.num_operators[key],
+                type_object="linear_physics",
+                reduction="mean",
+            )
+            for key, factory in self.physics.items()
+        }
 
         # Setup model components
         self.model, denoiser_params = self._setup_components(self.device, ctx)
         print("Components set up.")
-
-        # Distribute trainable algorithmic parameters (stepsize and g_param)
-        for i in range(len(self.model.params_algo["stepsize"])):
-            self.model.params_algo["stepsize"][i] = distribute(
-                self.model.params_algo["stepsize"][i], ctx
-            )
-        for i in range(len(self.model.params_algo["g_param"])):
-            self.model.params_algo["g_param"][i] = distribute(
-                self.model.params_algo["g_param"][i], ctx
-            )
-        if self.lambda_relaxation:
-            for i in range(len(self.model.params_algo["beta"])):
-                self.model.params_algo["beta"][i] = distribute(
-                    self.model.params_algo["beta"][i], ctx
-                )
 
         # Optimizer: algo params at learning_rate, denoiser weights at model_learning_rate
         # Cast to float: benchopt may pass scientific notation values (e.g. 1e-5) as strings.
@@ -306,41 +302,24 @@ class Solver(BaseSolver):
             ]
         )
 
-        # Build Trainer — same components as the demo
-        psnr_metric = PSNR(reduction="mean")
-        self.trainer = dinv.Trainer(
-            model=self.model,
-            physics=physics,
-            epochs=1,  # set to 1; train() is called once per callback iteration
-            device=self.device,
-            losses=[dinv.loss.SupLoss(metric=dinv.metric.MSE())],
-            metrics=psnr_metric,
-            optimizer=optimizer,
-            train_dataloader=self.train_dataloader,
-            eval_dataloader=self.val_dataloader,
-            grad_clip=1.0,
-            compute_train_metrics=True,
-            compare_no_learning=False,
-            save_path=None,
-            verbose=(ctx is None or ctx.rank == 0),
-            show_progress_bar=(ctx is None or ctx.rank == 0),
-            check_grad=True,
-        )
+        self.optimizer = optimizer
+        self.psnr_fn = PSNR(reduction="mean")
 
         # Track training and validation history
         self.train_psnr_history = []
         self.val_psnr_history = []
+        self.loss_step_history = []  # loss per gradient step
+        self.loss_epoch_history = []  # epoch-mean loss
         self.gpu_metrics_history = []
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
 
         # Pre-evaluate untrained model so benchopt step 0 shows real PSNR (not 0).
-        init_train_psnr = self.trainer.test(
-            self.train_dataloader, compare_no_learning=False
-        ).get("PSNR", 0.0)
-        init_val_psnr = self.trainer.test(
-            self.val_dataloader, compare_no_learning=False
-        ).get("PSNR", 0.0)
+        # Also cache the first val batch for the "unrolled (init)" comparison column.
+        init_train_psnr = self._eval_loop(self.train_dataloader)
+        init_val_psnr = self._eval_loop(self.val_dataloader, cache_first_batch=True)
+        # Store init reconstruction permanently for per-epoch figure comparison.
+        self._cached_init_val_batch = getattr(self, "_cached_val_batch", None)
         self.val_psnr_history.append(init_val_psnr)
         self.train_psnr_history.append(init_train_psnr)
         if ctx is None or ctx.rank == 0:
@@ -387,12 +366,183 @@ class Solver(BaseSolver):
             print(f"Final train PSNR: {self.train_psnr_history[-1]:.2f} dB")
             print(f"Final validation PSNR: {self.val_psnr_history[-1]:.2f} dB")
 
-    def _run_training_epochs(self, cb, ctx=None):
-        """Run training epochs with callback control using dinv.Trainer.
+    # ------------------------------------------------------------------
+    # Manual training / evaluation loops (multi-physics aware)
+    # ------------------------------------------------------------------
 
-        Each callback iteration runs one epoch via trainer.train() with epochs=1.
-        setup_train() always resets epoch_start=0, so epochs=1 means exactly one
-        epoch per call. Model weights persist across calls.
+    @staticmethod
+    def _crop_psnr(
+        x_hat: torch.Tensor,
+        x: torch.Tensor,
+        crop: int = 100,
+    ) -> torch.Tensor:
+        """PSNR on the central crop of a 3-D volume, normalised by the crop's pixel range.
+
+        Avoids cone-beam edge artefacts and focuses on material rather than air.
+        Both tensors are expected to have shape (B, C, D, H, W).
+        The range is max-min of the *target* crop (scalar over the whole crop).
+        """
+        # Crop last three spatial dims
+        c = slice(crop, -crop)
+        tgt = x[..., c, c, c]  # (B, C, D', H', W')
+        pred = x_hat[..., c, c, c]
+        range_val = tgt.amax() - tgt.amin()  # scalar
+        mse = torch.mean((tgt - pred) ** 2)
+        return 10.0 * torch.log10(range_val**2 / mse.clamp(min=1e-12))
+
+    def _compute_psnr(
+        self,
+        x_hat: torch.Tensor,
+        x: torch.Tensor,
+        num_proj_key,
+    ) -> torch.Tensor:
+        """Dispatch to crop-PSNR (Walnut CT) or standard PSNR (Urban100)."""
+        if num_proj_key is not None:
+            return self._crop_psnr(x_hat, x)
+        return self.psnr_fn(x_hat, x)
+
+    def _unpack_batch(self, batch):
+        """Normalise batch to (x, x_sparse, y_tl, num_proj_key) and move to device.
+
+        Handles two formats:
+          - 2-tuple (x, y_tl)                      — Urban100 / HDF5Dataset
+          - 4-tuple (x, x_sparse, y_tl, num_proj)  — Walnut CT
+
+        Returns:
+            x            : ground-truth tensor (on self.device)
+            x_sparse     : warm-start tensor (on self.device), or None
+            y_tl         : TensorList of measurements (on self.device)
+            num_proj_key : num_proj int for physics selection, or None
+        """
+
+        def _to(t):
+            if t is None:
+                return None
+            if isinstance(t, (list, TensorList)):
+                return TensorList([ti.to(self.device) for ti in t])
+            return t.to(self.device)
+
+        if len(batch) == 2:
+            x, y_tl = batch
+            return _to(x), None, _to(y_tl), None
+        x, x_sparse, y_tl, num_proj_key = batch
+        return _to(x), _to(x_sparse), _to(y_tl), num_proj_key
+
+    def _get_physics(self, num_proj_key):
+        """Return the distributed physics for a given num_proj key (or None for single-config)."""
+        if num_proj_key in self.distributed_physics:
+            return self.distributed_physics[num_proj_key]
+        # single-config fallback: the only key is None
+        return self.distributed_physics[None]
+
+    def _train_epoch(self) -> tuple[float, float]:
+        """Run one training epoch over the shuffled dataloader.
+
+        Handles both 2-tuple batches (Urban100) and 4-tuple batches (Walnut CT).
+        When x_sparse is present it is passed as init to warm-start PGD.
+
+        Returns:
+            (mean_psnr, mean_loss) over the epoch.
+        """
+        self.model.train()
+        psnr_vals = []
+        loss_vals = []
+        accum_steps = max(1, int(self.grad_accumulation_steps))
+        self.optimizer.zero_grad()
+        total_steps = len(self.train_dataloader)
+        ctx = self.ctx
+        is_rank0 = ctx is None or ctx.rank == 0
+        for step_idx, batch in enumerate(self.train_dataloader):
+            x, x_sparse, y_tl, num_proj_key = self._unpack_batch(batch)
+            physics = self._get_physics(num_proj_key)
+
+            x_hat = (
+                self.model(y_tl, physics, init=x_sparse)
+                if x_sparse is not None
+                else self.model(y_tl, physics)
+            )
+            loss = torch.nn.functional.mse_loss(x_hat, x)
+            # Scale loss so the effective gradient magnitude is independent of accum_steps
+            (loss / accum_steps).backward()
+
+            step_loss = loss.item()
+            loss_vals.append(step_loss)
+            self.loss_step_history.append(step_loss)
+            with torch.no_grad():
+                # Clip to min_pixel for PSNR only (negative attenuation is unphysical).
+                # Not applied before loss.backward() to preserve gradients.
+                x_hat_clipped = x_hat.clamp(min=self.min_pixel)
+                step_psnr = self._compute_psnr(x_hat_clipped, x, num_proj_key)
+                psnr_vals.append(step_psnr)
+
+            if is_rank0:
+                np_key = num_proj_key if num_proj_key is not None else "-"
+                print(
+                    f"  [train step {step_idx + 1}/{total_steps}] "
+                    f"np={np_key} | loss={step_loss:.6f} | psnr={float(step_psnr):.2f} dB"
+                )
+
+            # Optimizer step every accum_steps batches (or at end of epoch)
+            is_last = step_idx + 1 == len(self.train_dataloader)
+            if (step_idx + 1) % accum_steps == 0 or is_last:
+                torch.nn.utils.clip_grad_norm_(
+                    [
+                        p
+                        for group in self.optimizer.param_groups
+                        for p in group["params"]
+                    ],
+                    max_norm=1.0,
+                )
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+
+        mean_psnr = float(torch.tensor(psnr_vals).mean()) if psnr_vals else 0.0
+        mean_loss = float(sum(loss_vals) / len(loss_vals)) if loss_vals else 0.0
+        return mean_psnr, mean_loss
+
+    def _eval_loop(self, dataloader, cache_first_batch: bool = False) -> float:
+        """Evaluate model on a dataloader without gradient updates.
+
+        Handles both 2-tuple batches (Urban100) and 4-tuple batches (Walnut CT).
+        When x_sparse is present it is passed as init to warm-start PGD.
+
+        Args:
+            dataloader: dataloader to evaluate on.
+            cache_first_batch: if True, stores (x, x_sparse, x_hat) of the first
+                batch (CPU tensors) in ``self._cached_val_batch`` for visualization.
+
+        Returns mean PSNR over all batches.
+        """
+        self.model.eval()
+        psnr_vals = []
+        if cache_first_batch:
+            self._cached_val_batch = None
+        with torch.no_grad():
+            for i, batch in enumerate(dataloader):
+                x, x_sparse, y_tl, num_proj_key = self._unpack_batch(batch)
+                physics = self._get_physics(num_proj_key)
+                x_hat = (
+                    self.model(y_tl, physics, init=x_sparse)
+                    if x_sparse is not None
+                    else self.model(y_tl, physics)
+                )
+                # Clip to min_pixel (negative attenuation is unphysical); no upper clip.
+                x_hat_clipped = x_hat.clamp(min=self.min_pixel)
+                psnr_vals.append(self._compute_psnr(x_hat_clipped, x, num_proj_key))
+                if cache_first_batch and i == 0:
+                    self._cached_val_batch = (
+                        x.cpu(),
+                        x_sparse.cpu() if x_sparse is not None else None,
+                        x_hat_clipped.cpu(),
+                    )
+        return float(torch.tensor(psnr_vals).mean()) if psnr_vals else 0.0
+
+    def _run_training_epochs(self, cb, ctx=None):
+        """Run training epochs with callback control using a manual per-batch loop.
+
+        Each callback iteration runs one full pass over the shuffled training set
+        (one epoch). The train dataloader re-shuffles on each iteration, ensuring
+        IID (walnut_id, num_proj) sampling across epochs.
 
         Args:
             cb: Callback function to control iterations
@@ -411,11 +561,11 @@ class Solver(BaseSolver):
             if not keep_going:
                 break
 
-            # Run one epoch via Trainer
-            self.trainer.epochs = 1  # setup_train resets epoch_start=0 each call
-            self.trainer.train()
+            # Run one epoch
+            train_psnr, epoch_loss = self._train_epoch()
+            val_psnr = self._eval_loop(self.val_dataloader, cache_first_batch=True)
 
-            # Clamp beta to [0, 1] to keep the proximal relaxation meaningful.
+            # Clamp trainable parameters to valid ranges.
             with torch.no_grad():
                 for s in self.model.params_algo["stepsize"]:
                     s.clamp_(min=1e-8)
@@ -450,16 +600,47 @@ class Solver(BaseSolver):
                 )
                 torch.cuda.reset_peak_memory_stats(self.device)
 
-            # Extract PSNR from Trainer history
-            psnr_key = "PSNR"
-            val_psnr = self.trainer.eval_metrics_history.get(psnr_key, [0.0])[-1]
-            train_psnr = (
-                self.trainer.train_metrics_history.get(psnr_key, [0.0])[-1]
-                if self.trainer.train_metrics_history.get(psnr_key)
-                else 0.0
-            )
             self.val_psnr_history.append(val_psnr)
             self.train_psnr_history.append(train_psnr)
+            self.loss_epoch_history.append(epoch_loss)
+
+            # Save training curves and reconstruction figure (rank 0 only).
+            # Barrier before and after ensures all ranks stay in sync
+            if ctx is not None and self.distributed_mode:
+                ctx.barrier()
+            if ctx is None or ctx.rank == 0:
+                plot_dir = Path("images_results") / self.name
+                save_training_curves(
+                    self.loss_step_history,
+                    self.loss_epoch_history,
+                    self.train_psnr_history,
+                    self.val_psnr_history,
+                    save_dir=plot_dir,
+                    grad_accumulation_steps=int(self.grad_accumulation_steps),
+                )
+                if getattr(self, "_cached_val_batch", None) is not None:
+                    x_vis, xs_vis, xh_vis = self._cached_val_batch
+                    # x_hat_init: unrolled output with the *initial* (untrained) weights
+                    xh_init = (
+                        self._cached_init_val_batch[2]
+                        if getattr(self, "_cached_init_val_batch", None) is not None
+                        else None
+                    )
+                    init_psnr = (
+                        self.val_psnr_history[0] if self.val_psnr_history else None
+                    )
+                    save_reconstruction_figure(
+                        x_vis,
+                        xs_vis,
+                        xh_vis,
+                        psnr_val=val_psnr,
+                        epoch=epoch + 1,
+                        save_dir=plot_dir,
+                        x_hat_init=xh_init,
+                        psnr_init=init_psnr,
+                    )
+            if ctx is not None and self.distributed_mode:
+                ctx.barrier()
 
             # Print progress
             if ctx is None or ctx.rank == 0:

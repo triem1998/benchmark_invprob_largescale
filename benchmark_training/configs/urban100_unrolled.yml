@@ -10,10 +10,10 @@ dataset:
   - urban100:
       image_size: 512
       num_operators: 4
-      train_images: 32
-      val_images: 8
+      train_images: 64
+      val_images: 16
       batch_size: 1
-      noise_level: 0.06
+      noise_level: 0.1
 
 
 # Solver filters
@@ -23,11 +23,12 @@ solver:
       n_iter: 4
       init_stepsize: 0.9
       denoiser_sigma: 0.05
-      learning_rate: 0.01
-      slurm_gres, slurm_ntasks_per_node, slurm_nodes, distribute_physics, distribute_denoiser, patch_size, overlap, max_batch_size: [
-        ["gpu:1", 1, 1, false, false, 0, 0, 0],
-        ["gpu:2", 2, 1, true, true,256, 32, 1],
-        #["gpu:4", 4, 1, true, true, 256, 32, 4],
+      learning_rate: 1e-4
+      model_learning_rate: 1e-4
+      slurm_gres, slurm_ntasks_per_node, slurm_nodes, distribute_model, patch_size, overlap, max_batch_size: [
+        ["gpu:1", 1, 1, false, 0, 0, 0],
+        ["gpu:2", 2, 1, true, 256, 32, 4],
+        ["gpu:4", 4, 1, true, 256, 32, 4],
       ]
 
 # Run parameters

@@ -9,6 +9,8 @@ from .solver_utils import (
     initialize_reconstruction as initialize_reconstruction,
     normalize_to_unit as normalize_to_unit,
     denormalize_from_unit as denormalize_from_unit,
+    save_training_curves as save_training_curves,
+    save_reconstruction_figure as save_reconstruction_figure,
 )
 
 import math
