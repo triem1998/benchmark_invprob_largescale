@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import time
 import typing
+from pathlib import Path
 
 import torch
 from benchopt import BaseSolver
@@ -56,22 +57,33 @@ class Solver(BaseSolver):
         "batch_wait_s": [0.0],
         "device": ["cpu"],
         "poll_interval_s": [0.01],
+        "orchestrator_name": ["process-pool"],
+        "server_type": ["filesystem"],
+        "ncpus": [2],
+        "ngpus": [0],
+        # Submitit/SLURM parameters (used by benchopt --parallel-config backend=submitit)
+        "slurm_nodes": [1],
+        "slurm_ntasks_per_node": [1],
+        "slurm_gres": ["gpu:1"],
     }
 
     def set_objective(
         self,
-        physics,
-        measurement_template,
+        stream_dataloader,
         physics_spec,
         stream_spec,
         ground_truth_shape,
         min_pixel=0.0,
         max_pixel=1.0,
     ):
-        self.physics = physics
-        self.measurement_template = measurement_template
+        self.stream_dataloader = stream_dataloader
+        self.stream_records = self._materialize_stream_records(stream_dataloader)
         self.physics_spec = physics_spec
-        self.stream_spec = stream_spec
+        self.stream_spec = dict(stream_spec)
+        self.stream_spec["max_packets"] = min(
+            int(self.stream_spec.get("max_packets", len(self.stream_records))),
+            len(self.stream_records),
+        )
         self.ground_truth_shape = tuple(ground_truth_shape)
         self.min_pixel = float(min_pixel)
         self.max_pixel = float(max_pixel)
@@ -79,6 +91,35 @@ class Solver(BaseSolver):
         self.reconstruction = torch.zeros(self.ground_truth_shape, dtype=torch.float32)
         self.trace = {}
         self.name = self.__class__.name
+
+    @staticmethod
+    def _materialize_stream_records(stream_dataloader):
+        dataset = getattr(stream_dataloader, "dataset", None)
+        raw_records = getattr(dataset, "records", None)
+        if raw_records is None:
+            records = []
+            for sample in stream_dataloader:
+                record = {"physics_spec": dict(sample["physics_spec"])}
+                if "image_path" in sample:
+                    record["image_path"] = sample["image_path"]
+                elif "image" in sample:
+                    record["image"] = sample["image"].detach().cpu()
+                else:
+                    raise KeyError(
+                        "Each stream sample must contain 'image_path' or 'image'."
+                    )
+                records.append(record)
+        else:
+            records = [
+                {
+                    "image_path": record["image_path"],
+                    "physics_spec": dict(record["physics_spec"]),
+                }
+                for record in raw_records
+            ]
+        if len(records) == 0:
+            raise ValueError("stream_dataloader yielded no samples.")
+        return records
 
     def _build_workflow(self, server_info, key_prefix, compute_device):
         pnp_cfg = {
@@ -94,13 +135,15 @@ class Solver(BaseSolver):
             "device": str(compute_device),
             "poll_interval_s": float(self.poll_interval_s),
         }
+        ncpus = int(self.ncpus)
+        ngpus = int(self.ngpus)
 
         workflow = Workflow(
             orchestrator_config=OchestratorConfig(
-                name="process-pool",
+                name=self.orchestrator_name,
                 submit_loop_sleep_time=1,
             ),
-            system_config=SystemConfig(name="local", ncpus=2, ngpus=0),
+            system_config=SystemConfig(name="local", ncpus=ncpus, ngpus=ngpus),
         )
         workflow.register_component(
             name="producer",
@@ -109,8 +152,7 @@ class Solver(BaseSolver):
             args={
                 "server_info": server_info,
                 "key_prefix": key_prefix,
-                "measurement_template": self.measurement_template,
-                "ground_truth_template": None,
+                "stream_records": self.stream_records,
                 "stream_spec": self.stream_spec,
             },
         )
@@ -129,6 +171,17 @@ class Solver(BaseSolver):
         return workflow
 
     @staticmethod
+    def _ensure_worker_pythonpath():
+        """Ensure workers can import sitecustomize startup fallbacks."""
+        benchmark_root = str(Path(__file__).resolve().parents[2])
+        current = os.environ.get("PYTHONPATH", "")
+        paths = [p for p in current.split(os.pathsep) if p]
+        if benchmark_root not in paths:
+            os.environ["PYTHONPATH"] = (
+                benchmark_root if not current else benchmark_root + os.pathsep + current
+            )
+
+    @staticmethod
     def _wait_for_result(result_reader, key, timeout_s=30.0):
         start = time.perf_counter()
         while time.perf_counter() - start < timeout_s:
@@ -140,22 +193,55 @@ class Solver(BaseSolver):
             "Check SimAI-Bench logs for component failures."
         )
 
+    @staticmethod
+    def _ensure_simaibench_logdir():
+        """Ensure SimAI-Bench can create logs under cwd/logs."""
+        logs_dir = Path.cwd() / "logs"
+        if logs_dir.exists() and not logs_dir.is_dir():
+            raise RuntimeError(
+                f"Cannot create SimAI-Bench logs: '{logs_dir}' exists and is not a directory."
+            )
+        logs_dir.mkdir(parents=True, exist_ok=True)
+
     def run(self, n_iter=None):
         del n_iter
+        self._ensure_worker_pythonpath()
+        self._ensure_simaibench_logdir()
         compute_device = (
             torch.device("cuda")
             if self.device == "cuda" and torch.cuda.is_available()
             else torch.device("cpu")
         )
         tmp_dir = tempfile.mkdtemp(prefix="infer_inverse_simai_")
-        server_config = server_registry.create_config(
-            type="filesystem",
-            server_address=tmp_dir,
-            nshards=64,
-        )
-        server = ServerManager("stream_server", config=server_config)
-        server.start_server()
+        server = None
         try:
+            if self.server_type == "filesystem":
+                server_config = server_registry.create_config(
+                    type="filesystem",
+                    server_address=tmp_dir,
+                    nshards=64,
+                )
+            elif self.server_type == "redis":
+                redis_server_exe = shutil.which("redis-server")
+                if redis_server_exe is None:
+                    raise RuntimeError(
+                        "server_type='redis' requires a 'redis-server' executable "
+                        "available on PATH."
+                    )
+                server_config = server_registry.create_config(
+                    type="redis",
+                    server_address="localhost:6379",
+                    redis_server_exe=redis_server_exe,
+                    is_clustered=False,
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported server_type '{self.server_type}'. "
+                    "Expected one of: filesystem, redis."
+                )
+            server = ServerManager("stream_server", config=server_config)
+            server.start_server()
+
             server_info = server.get_server_info()
             key_prefix = f"run_{time.time_ns()}"
 
@@ -176,7 +262,8 @@ class Solver(BaseSolver):
             self.reconstruction = output["reconstruction"]
             self.trace = output["trace"]
         finally:
-            server.stop_server()
+            if server is not None:
+                server.stop_server()
             if os.path.isdir(tmp_dir):
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 

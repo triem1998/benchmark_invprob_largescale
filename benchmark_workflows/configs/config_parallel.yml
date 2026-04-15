@@ -1,0 +1,17 @@
+backend: submitit
+slurm_time: 00:30:00
+slurm_stderr_to_stdout: True
+slurm_nodes: 1
+slurm_ntasks_per_node: 1
+slurm_gres: gpu:1
+slurm_additional_parameters:
+  cpus-per-task: 10
+  # Fill these for your cluster:
+  qos: qos_gpu-dev
+  account: # Fill this for your cluster
+  constraint: "v100-32g"
+slurm_array_parallelism: 1
+slurm_setup:
+  - module purge
+  - module load pytorch-gpu/py3/2.7.0
+  - export NCCL_DEBUG=INFO
