@@ -16,16 +16,17 @@ class Objective(BaseObjective):
     def set_data(
         self,
         ground_truth,
-        physics,
-        measurement_template,
+        stream_dataloader,
         physics_spec,
         stream_spec,
         min_pixel=0.0,
         max_pixel=1.0,
+        physics=None,
+        measurement_template=None,
     ):
+        del physics, measurement_template
         self.ground_truth = ground_truth
-        self.physics = physics
-        self.measurement_template = measurement_template
+        self.stream_dataloader = stream_dataloader
         self.physics_spec = physics_spec
         self.stream_spec = stream_spec
         self.min_pixel = min_pixel
@@ -33,8 +34,7 @@ class Objective(BaseObjective):
 
     def get_objective(self):
         return dict(
-            physics=self.physics,
-            measurement_template=self.measurement_template,
+            stream_dataloader=self.stream_dataloader,
             physics_spec=self.physics_spec,
             stream_spec=self.stream_spec,
             ground_truth_shape=tuple(self.ground_truth.shape),

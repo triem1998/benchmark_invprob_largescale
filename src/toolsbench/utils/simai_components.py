@@ -135,12 +135,42 @@ def result_key(key_prefix: str) -> str:
     return f"{key_prefix}:result"
 
 
+def _normalize_image_tensor(image):
+    if not isinstance(image, torch.Tensor):
+        raise TypeError(f"Expected image tensor, got {type(image)}")
+    if image.ndim == 2:
+        image = image.unsqueeze(0).unsqueeze(0)
+    elif image.ndim == 3:
+        image = image.unsqueeze(0)
+    elif image.ndim != 4:
+        raise ValueError(f"Unsupported image tensor shape: {tuple(image.shape)}")
+    return image.to(dtype=torch.float32)
+
+
+def _sample_to_image_and_spec(sample):
+    if not isinstance(sample, dict):
+        raise TypeError(f"Expected sample dictionary, got {type(sample)}")
+
+    image = sample.get("image", None)
+    image_path = sample.get("image_path", None)
+    physics_spec = sample.get("physics_spec", None)
+
+    if image is None and image_path is not None:
+        image = torch.load(image_path, map_location="cpu")
+    if image is None:
+        raise KeyError("Missing image payload. Expected 'image' or 'image_path'.")
+    if physics_spec is None:
+        raise KeyError("Missing 'physics_spec' in stream sample.")
+
+    return _normalize_image_tensor(image), dict(physics_spec)
+
+
 def producer_component(
     server_info,
     key_prefix,
-    measurement_template,
-    ground_truth_template,
     stream_spec,
+    stream_records=None,
+    stream_dataloader=None,
 ):
     """Workflow component: produce packet stream into SimAI DataStore."""
     ds = DataStore("producer", server_info=server_info)
@@ -148,25 +178,49 @@ def producer_component(
     rate_hz = stream_spec.get("rate_hz", None)
     include_ground_truth = bool(stream_spec.get("include_ground_truth", True))
     t0 = time.perf_counter()
+    current_physics_spec = None
+    current_physics = None
+    if stream_records is not None:
+        source_iter = iter(stream_records)
+    elif stream_dataloader is not None:
+        source_iter = iter(stream_dataloader)
+    else:
+        raise ValueError(
+            "producer_component expects either stream_records or stream_dataloader."
+        )
     try:
-        for packet_id in range(max_packets):
+        for packet_id, sample in enumerate(source_iter):
+            if packet_id >= max_packets:
+                break
             if rate_hz is not None and float(rate_hz) > 0:
                 target_t = t0 + (packet_id / float(rate_hz))
                 wait_s = target_t - time.perf_counter()
                 if wait_s > 0:
                     time.sleep(wait_s)
 
-            y = _clone_payload(measurement_template)
-            x_true = (
-                _clone_payload(ground_truth_template) if include_ground_truth else None
-            )
+            x_true_raw, sample_physics_spec = _sample_to_image_and_spec(sample)
+
+            if sample_physics_spec != current_physics_spec or current_physics is None:
+                current_physics = _build_physics_from_spec(
+                    ground_truth_shape=tuple(x_true_raw.shape),
+                    physics_spec=sample_physics_spec,
+                    compute_device=torch.device("cpu"),
+                )
+                current_physics_spec = dict(sample_physics_spec)
+
+            with torch.no_grad():
+                y = current_physics(x_true_raw)
+                y = torch.clamp(y, 0.0, 1.0)
+
+            x_true = _clone_payload(x_true_raw) if include_ground_truth else None
             ds.stage_write(
                 packet_key(key_prefix, packet_id),
                 {
                     "packet_id": packet_id,
                     "t_source": time.perf_counter(),
-                    "y": y,
+                    "y": _clone_payload(y),
                     "x_true": x_true,
+                    "physics_spec": sample_physics_spec,
                     "nbytes": payload_nbytes(y),
                 },
             )
@@ -204,6 +258,7 @@ def pnp_consumer_component(
         physics_spec=physics_spec,
         compute_device=compute_device,
     )
+    active_physics_spec = dict(physics_spec)
     denoiser = BoxBlurDenoiser(kernel_size=pnp_cfg["denoiser_kernel_size"]).to(
         compute_device
     )
@@ -254,6 +309,14 @@ def pnp_consumer_component(
         measurement = _concat_payloads(
             [_to_device(packet["y"], compute_device) for packet in batch_packets]
         )
+        batch_physics_spec = batch_packets[0].get("physics_spec", active_physics_spec)
+        if batch_physics_spec != active_physics_spec:
+            physics = _build_physics_from_spec(
+                ground_truth_shape=ground_truth_shape,
+                physics_spec=batch_physics_spec,
+                compute_device=compute_device,
+            )
+            active_physics_spec = dict(batch_physics_spec)
 
         if hasattr(physics, "A_adjoint"):
             with torch.no_grad():

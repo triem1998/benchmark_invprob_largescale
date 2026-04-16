@@ -1,7 +1,7 @@
 ## Benchmarks
 benchmark_*/data/
 benchmark_*/outputs/
-
+.cluster_data*
 
 ## Deepinv
 __cache__/

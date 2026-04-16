@@ -24,6 +24,7 @@ dependencies = [
     "typing-extensions",
     "deepinv @ git+https://github.com/deepinv/deepinv.git@main",
     "simai-bench @ git+https://github.com/argonne-lcf/SimAI-Bench.git",
+    "ray>=2.54.1",
 ]
 
 [project.optional-dependencies]
