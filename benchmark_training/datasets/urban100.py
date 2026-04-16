@@ -17,7 +17,7 @@ from deepinv.datasets import generate_dataset, HDF5Dataset
 from torch.utils.data import Subset, DataLoader
 import deepinv as dinv
 
-from toolsbench.utils.support_dataloader import collate_deepinv_batch
+from toolsbench.utils import collate_deepinv_batch
 
 
 class Dataset(BaseDataset):

@@ -4,11 +4,7 @@ This objective is designed for both training and inference solvers.
 It evaluates reconstruction quality using PSNR.
 """
 
-import torch
 from benchopt import BaseObjective
-from deepinv.loss.metric import PSNR
-
-from toolsbench.utils import save_comparison_figure
 
 
 class Objective(BaseObjective):
@@ -31,6 +27,7 @@ class Objective(BaseObjective):
         num_operators=None,
         ground_truth_shape=None,
         operator_norm=1.0,
+        operator_norm_map=None,
     ):
         """Set the data from a Dataset to compute the objective.
 
@@ -56,12 +53,14 @@ class Objective(BaseObjective):
         self.val_dataloader = val_dataloader
         self.physics = physics
         self.num_operators = num_operators if num_operators is not None else 1
-        self.psnr_metric = PSNR(max_pixel=max_pixel)
         self.min_pixel = min_pixel
         self.max_pixel = max_pixel
         self.evaluation_count = 0
         self.ground_truth_shape = ground_truth_shape
         self.operator_norm = float(operator_norm)
+        self.operator_norm_map = (
+            operator_norm_map if operator_norm_map is not None else {}
+        )
 
     def get_objective(self):
         """Returns a dict passed to Solver.set_objective method.
@@ -80,79 +79,35 @@ class Objective(BaseObjective):
             min_pixel=self.min_pixel,
             max_pixel=self.max_pixel,
             operator_norm=self.operator_norm,
+            operator_norm_map=self.operator_norm_map,
         )
 
-    def evaluate_result(self, name=None, reconstructions=None, val_psnr=None, **kwargs):
+    def evaluate_result(self, val_psnr=None, **kwargs):
         """Compute the objective value given the output of a solver.
 
-        For training-based solvers, this uses the pre-computed validation PSNR.
-        For inference solvers, evaluates on the test set using reconstructions.
+        Solvers always pre-compute and pass ``val_psnr`` directly.
 
         Parameters
         ----------
-        name : str, optional
-            Name of the solver (provided by benchopt framework).
-        reconstructions : list of torch.Tensor, optional
-            List of reconstructed images.
-        val_psnr : float, optional
-            Pre-computed validation PSNR.
-        train_psnr : float, optional
-            Pre-computed training PSNR.
+        val_psnr : float
+            Pre-computed validation PSNR returned by the solver.
         **kwargs : dict
-            Optional GPU and step metrics.
+            Optional extra metrics (e.g. GPU memory, train PSNR).
 
         Returns
         -------
         dict
             Dictionary with 'value' (negative PSNR for minimization) and metrics.
         """
+        if val_psnr is None:
+            raise ValueError("Solver must provide val_psnr.")
 
-        if val_psnr is not None:
-            avg_psnr = val_psnr
-        else:
-            # compute from reconstructions
-            if reconstructions is not None:
-                with torch.no_grad():
-                    local_psnr_sum = 0.0
-                    local_count = 0
-                    first_ground_truth = None
-                    first_reconstruction = None
-
-                    for batch_idx, (ground_truth, _) in enumerate(self.val_dataloader):
-                        reconstruction = reconstructions[batch_idx].to(
-                            ground_truth.device
-                        )
-                        # Save first image for visualization
-                        if batch_idx == 0:
-                            first_ground_truth = ground_truth
-                            first_reconstruction = reconstruction
-
-                        batch_psnr = self.psnr_metric(
-                            reconstruction, ground_truth
-                        ).item()
-                        local_psnr_sum += batch_psnr * ground_truth.shape[0]
-                        local_count += ground_truth.shape[0]
-
-                    avg_psnr = local_psnr_sum / local_count if local_count > 0 else 0.0
-            else:
-                raise ValueError(
-                    " must provide reconstructions or val_psnr for evaluation."
-                )
+        avg_psnr = val_psnr
 
         # Return value (primary metric for stopping criterion) and additional metrics
         result = dict(value=-avg_psnr, val_psnr=avg_psnr)
 
         self.evaluation_count += 1
-        if reconstructions is not None and name is not None:
-            output_dir = "evaluation_output/" + name.replace("/", "_").replace("..", "")
-            save_comparison_figure(
-                first_ground_truth,
-                first_reconstruction,
-                metrics={"psnr": avg_psnr},
-                output_dir=output_dir,
-                filename=f"eval_{self.evaluation_count:04d}.png",
-                evaluation_count=self.evaluation_count,
-            )
 
         # Add all non-None metrics from kwargs to result
         for key, value in kwargs.items():
