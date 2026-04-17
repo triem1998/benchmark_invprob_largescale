@@ -16,7 +16,9 @@ from deepinv.optim import PGD
 
 from toolsbench.utils import (
     _Trainer,
+    TrainingHistory,
     create_drunet_denoiser,
+    setup_distributed_env,
 )
 
 
@@ -47,38 +49,33 @@ class Solver(BaseSolver):
         "learning_rate": [1e-5],  # LR for algorithmic parameters (stepsize, g_param).
         "model_learning_rate": [1e-5],  # LR for denoiser weights.
         # --- Distributed processing ---
-        "distribute_model": [
-            True
-        ],  # Wrap model in DistributedProcessing (patch-based).
+        "distribute_model": [True],
+        # Wrap model in DistributedProcessing (patch-based).
         "torch_compile": [False],  # Apply torch.compile to the model.
         "patch_size": [128],  # Spatial patch size for DistributedProcessing.
         "overlap": [32],  # Overlap between adjacent patches.
         "max_batch_size": [1],  # Max patch-batch size inside DistributedProcessing.
         "checkpoint_batches": ["auto"],  # Activation checkpointing for patch-batches
         # --- Algo options ---
-        "lambda_relaxation": [
-            False
-        ],  # Also train beta (proximal relaxation parameter).
+        "lambda_relaxation": [False],
+        # Also train beta (proximal relaxation parameter).
         # --- SLURM / torchrun ---
         "slurm_nodes": [1],
         "slurm_ntasks_per_node": [1],
         "slurm_gres": ["gpu:1"],
         "torchrun_nproc_per_node": [1],
         # --- Logging / profiling ---
-        "name_prefix": [
-            "unrolled_pnp"
-        ],  # Prefix for the run name (timestamp appended).
+        "name_prefix": ["unrolled_pnp"],
+        # Prefix for the run name (timestamp appended).
         "profile_dir": ["tb_profiles"],  # Directory for TensorBoard profiler traces.
         "use_profiler": [False],  # Enable torch.profiler tracing (rank 0 only).
         # --- Physics ---
         "operator_norm": [1.0],  # Reference operator norm (overrides dataset value).
         # --- Training loop ---
-        "grad_accumulation_steps": [
-            1
-        ],  # Accumulate gradients over N steps before optimizer.step().
-        "train_algo_params": [
-            True
-        ],  # Also train stepsize/g_param; False = denoiser only.
+        "grad_accumulation_steps": [1],
+        # Accumulate gradients over N steps before optimizer.step().
+        "train_algo_params": [True],
+        # Also train stepsize/g_param; False = denoiser only.
         "normalize": [False],  # Normalize ground truth to [0, 1] before forward pass.
         "use_x_init": [True],  # Warm-start PGD from x_sparse when available.
         "max_batches_per_epoch": [None],  # Cap batches per epoch (None = full dataset).
@@ -87,7 +84,7 @@ class Solver(BaseSolver):
         "log_every": [1],  # Print/log metrics every N train steps.
         "save_debug_every": [0],  # Save debug figures every N steps (0 = disabled).
         # --- Reproducibility ---
-        "seed": [0],  # RNG seed; vary instead of n-repetitions.
+        "seed": [0],  # RNG seed.
     }
 
     def set_objective(
@@ -128,28 +125,8 @@ class Solver(BaseSolver):
             operator_norm_map if operator_norm_map is not None else {}
         )
 
-        self.world_size = 1
         self.ctx = None
-
-        # Check if distributed environment is already set up
-        if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
-            self.world_size = int(os.environ.get("WORLD_SIZE", 1))
-            print(
-                f"Distributed environment already initialized: world_size={self.world_size}"
-            )
-        else:
-            try:
-                import submitit
-
-                submitit.helpers.TorchDistributedEnvironment().export(
-                    set_cuda_visible_devices=False
-                )
-                self.world_size = int(os.environ.get("WORLD_SIZE", 1))
-                print(
-                    f"Initialized distributed environment via submitit: world_size={self.world_size}"
-                )
-            except (ImportError, RuntimeError) as e:
-                print(f"Running in non-distributed mode: {e}")
+        self.world_size = setup_distributed_env()
 
         self.distributed_mode = self.world_size > 1
         self.val_reconstructions = []
@@ -356,17 +333,7 @@ class Solver(BaseSolver):
         self.optimizer = optimizer
 
         # Track training and validation history
-        self.train_psnr_history = []
-        self.val_psnr_history = []
-        self.loss_step_history = (
-            []
-        )  # per-step train loss (shared ref to _trainer.all_loss_steps)
-        self.val_loss_step_history = (
-            []
-        )  # per-step val loss (shared ref to _trainer.all_val_loss_steps)
-        self.loss_epoch_history = []  # epoch-mean train loss
-        self.val_loss_epoch_history = []  # epoch-mean val loss
-        self.gpu_metrics_history = []
+        self.history = TrainingHistory()
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
 
@@ -393,8 +360,8 @@ class Solver(BaseSolver):
             ref_opnorm=self._dataset_operator_norm,
         )
         # Shared references so _run_training_epochs can access loss histories.
-        self.loss_step_history = self._trainer.all_loss_steps
-        self.val_loss_step_history = self._trainer.all_val_loss_steps
+        self.history.loss_steps = self._trainer.all_loss_steps
+        self.history.val_loss_steps = self._trainer.all_val_loss_steps
 
         # Pre-evaluate untrained model on val set so benchopt step 0 shows real PSNR.
         # Also caches the first val batch for the "unrolled (init)" comparison figure.
@@ -405,7 +372,7 @@ class Solver(BaseSolver):
         print(f"[timing] pre-eval val: {time.perf_counter()-_t:.1f}s", flush=True)
         # Store init reconstruction permanently for per-epoch figure comparison.
         self._trainer._cached_init_val_batch = self._trainer._cached_val_batch
-        self.val_psnr_history.append(init_val_psnr)
+        self.history.val_psnr.append(init_val_psnr)
         if ctx is None or ctx.rank == 0:
             print(f"[init] val PSNR: {init_val_psnr:.2f} dB (untrained model)")
 
@@ -417,7 +384,7 @@ class Solver(BaseSolver):
         self._run_training_epochs(cb, ctx)
         print(f"[timing] total training: {time.perf_counter()-_t:.1f}s", flush=True)
 
-        print(f"\nTraining completed after {len(self.train_psnr_history)} epochs")
+        print(f"\nTraining completed after {len(self.history.train_psnr)} epochs")
 
         # Stop profiler and print summary
         if self.profiler is not None:
@@ -448,8 +415,8 @@ class Solver(BaseSolver):
                         f"{b.item():.4f}" for b in self.model.params_algo["beta"]
                     ]
                     print(f"Final trainable betas: {final_betas}")
-            print(f"Final train PSNR: {self.train_psnr_history[-1]:.2f} dB")
-            print(f"Final validation PSNR: {self.val_psnr_history[-1]:.2f} dB")
+            print(f"Final train PSNR: {self.history.train_psnr[-1]:.2f} dB")
+            print(f"Final validation PSNR: {self.history.val_psnr[-1]:.2f} dB")
 
     def _run_training_epochs(self, cb, ctx=None):
         """Run training epochs with callback control using a manual per-batch loop.
@@ -506,7 +473,7 @@ class Solver(BaseSolver):
                 )
                 reserved_mb = torch.cuda.memory_reserved(self.device) / 1024**2
                 available_mb = total_mb - reserved_mb
-                self.gpu_metrics_history.append(
+                self.history.gpu_metrics.append(
                     {
                         "epoch": epoch,
                         "gpu_memory_allocated_mb": allocated_mb,
@@ -517,10 +484,10 @@ class Solver(BaseSolver):
                 )
                 torch.cuda.reset_peak_memory_stats(self.device)
 
-            self.val_psnr_history.append(val_psnr)
-            self.train_psnr_history.append(train_psnr)
-            self.loss_epoch_history.append(epoch_loss)
-            self.val_loss_epoch_history.append(val_loss)
+            self.history.val_psnr.append(val_psnr)
+            self.history.train_psnr.append(train_psnr)
+            self.history.loss_epochs.append(epoch_loss)
+            self.history.val_loss_epochs.append(val_loss)
 
             # Barrier before printing progress
             if ctx is not None and self.distributed_mode:
@@ -566,17 +533,19 @@ class Solver(BaseSolver):
         CUDA is available.
         """
         result = dict(
-            val_psnr=self.val_psnr_history[-1] if self.val_psnr_history else 0.0,
-            train_psnr=self.train_psnr_history[-1] if self.train_psnr_history else 0.0,
+            val_psnr=self.history.val_psnr[-1] if self.history.val_psnr else 0.0,
+            train_psnr=self.history.train_psnr[-1] if self.history.train_psnr else 0.0,
             train_loss=(
-                self.loss_epoch_history[-1] if self.loss_epoch_history else float("nan")
+                self.history.loss_epochs[-1]
+                if self.history.loss_epochs
+                else float("nan")
             ),
             val_loss=(
                 next(
-                    (v for v in reversed(self.val_loss_epoch_history) if not (v != v)),
+                    (v for v in reversed(self.history.val_loss_epochs) if not (v != v)),
                     float("nan"),
                 )
-                if self.val_loss_epoch_history
+                if self.history.val_loss_epochs
                 else float("nan")
             ),
             train_total_time=(
@@ -610,8 +579,8 @@ class Solver(BaseSolver):
                 else float("nan")
             ),
         )
-        if self.gpu_metrics_history:
-            last = self.gpu_metrics_history[-1]
+        if self.history.gpu_metrics:
+            last = self.history.gpu_metrics[-1]
             result["gpu_memory_allocated_mb"] = last["gpu_memory_allocated_mb"]
             result["gpu_memory_max_allocated_mb"] = last["gpu_memory_max_allocated_mb"]
             result["gpu_memory_reserved_mb"] = last["gpu_memory_reserved_mb"]

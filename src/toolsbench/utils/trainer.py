@@ -29,13 +29,13 @@ volume saving) and generic helpers (standard PSNR) is driven entirely by
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
+from typing import Any
 
 import torch
 
-# Relative imports from sibling modules — no circular dependency risk since
-# these are leaf modules that do not themselves import from trainer.
 from .tomo_utils import (
     append_metrics_row,
     ensure_dir,
@@ -47,6 +47,27 @@ from .solver_utils import (
     save_prediction_results,
     save_training_figure,
 )
+
+
+@dataclass
+class TrainingHistory:
+    """Container for all per-epoch and per-step training/validation metrics.
+
+    All list fields are populated in-place during training so that external
+    references (e.g. shared with :class:`_Trainer`) remain valid.
+    """
+
+    # Per-epoch PSNR
+    train_psnr: list[float] = field(default_factory=list)
+    val_psnr: list[float] = field(default_factory=list)
+    # Per-step loss (shared references to _Trainer.all_loss_steps / all_val_loss_steps)
+    loss_steps: list[float] = field(default_factory=list)
+    val_loss_steps: list[float] = field(default_factory=list)
+    # Per-epoch mean loss
+    loss_epochs: list[float] = field(default_factory=list)
+    val_loss_epochs: list[float] = field(default_factory=list)
+    # Per-epoch GPU memory snapshots (dicts with allocated/reserved/available keys)
+    gpu_metrics: list[dict[str, Any]] = field(default_factory=list)
 
 
 class _Trainer:

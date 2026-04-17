@@ -8,7 +8,6 @@ shuffling.  Each batch is a dict with keys: ``"x"``, ``"x_sparse"``,
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +18,10 @@ from toolsbench.utils import (
     load_trajectory_sparse,
     WalnutGroupSampler,
     WalnutTomoDataset,
+    setup_distributed_env,
 )
+from toolsbench.utils import projection_splits
+import deepinv as dinv
 
 
 class Dataset(BaseDataset):
@@ -32,25 +34,20 @@ class Dataset(BaseDataset):
 
     name = "tomography_3d_train"
 
-    requirements = [
-        "torch",
-        "numpy",
-        "pandas",
-        "pip::git+https://github.com/deepinv/deepinv.git@main",
-    ]
-
     parameters = {
-        "input_dir": ["/lustre/fswork/projects/rech/fio/commun/Walnut-CBCT"],
+        "input_dir": ["None"],
+        ## TODO: specify dataset source/path; will later add installation + download from Hugging Face
         "num_projs": [[30, 50, 100]],
         "batch_size": [1],
         "max_train_samples": [None],
         "max_val_samples": [None],
         # None → num_operators == num_proj (one sub-operator per projection angle)
         "num_operators": [None],
-        "num_workers": [2],
+        "num_workers": [1],
         "pin_memory": [True],
-        "prefetch_factor": [2],
+        "prefetch_factor": [1],
         "persistent_workers": [True],
+        "seed": [0],  # RNG seed for train sampler shuffle.
     }
 
     def __init__(
@@ -65,6 +62,7 @@ class Dataset(BaseDataset):
         pin_memory=True,
         prefetch_factor=2,
         persistent_workers=True,
+        seed=0,
     ):
         self.input_dir = Path(input_dir)
         self.num_projs = list(num_projs)
@@ -76,10 +74,7 @@ class Dataset(BaseDataset):
         self.pin_memory = bool(pin_memory)
         self.prefetch_factor = int(prefetch_factor)
         self.persistent_workers = bool(persistent_workers)
-
-    # ------------------------------------------------------------------
-    # Physics factory
-    # ------------------------------------------------------------------
+        self.seed = int(seed)
 
     # ------------------------------------------------------------------
     # Physics factory
@@ -91,13 +86,11 @@ class Dataset(BaseDataset):
         The factory signature is ``factory(index, device, shared=None)`` as
         required by ``deepinv.distributed.distribute()``.
         """
-        from toolsbench.utils import projection_splits
 
         splits = projection_splits(len(trajectory_sparse), num_ops)
         traj_cpu = trajectory_sparse.cpu()
 
         def factory(index: int, device, shared=None):
-            import deepinv as dinv
 
             start, end = splits[index]
             traj_subset = traj_cpu[start:end].clone().to(device)
@@ -133,16 +126,7 @@ class Dataset(BaseDataset):
           ``operator_norm_map`` (full per-sample dict).
         """
         # Export distributed env from submitit if in a SLURM job.
-        if "RANK" not in os.environ or "WORLD_SIZE" not in os.environ:
-            try:
-                import submitit
-
-                submitit.helpers.TorchDistributedEnvironment().export(
-                    set_cuda_visible_devices=False
-                )
-                print("[tomography_3d] distributed env exported via submitit")
-            except (ImportError, RuntimeError) as e:
-                print(f"[tomography_3d] non-distributed mode ({e})")
+        setup_distributed_env()
 
         # Build datasets (lazy: no binary data loaded yet).
         train_dataset = WalnutTomoDataset(
@@ -164,23 +148,23 @@ class Dataset(BaseDataset):
         )
 
         # Samplers with group-level shuffling.
-        train_sampler = WalnutGroupSampler(train_dataset, shuffle=True, seed=0)
-        val_sampler = WalnutGroupSampler(val_dataset, shuffle=False, seed=0)
+        train_sampler = WalnutGroupSampler(train_dataset, shuffle=True, seed=self.seed)
+        val_sampler = WalnutGroupSampler(val_dataset, shuffle=False, seed=self.seed)
 
         # DataLoader kwargs.
-        lkw: dict = dict(
+        loader_kwargs: dict = dict(
             batch_size=self.batch_size,
             drop_last=False,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
         )
         if self.num_workers > 0:
-            lkw["prefetch_factor"] = self.prefetch_factor
-            lkw["persistent_workers"] = self.persistent_workers
+            loader_kwargs["prefetch_factor"] = self.prefetch_factor
+            loader_kwargs["persistent_workers"] = self.persistent_workers
 
-        train_loader = DataLoader(train_dataset, sampler=train_sampler, **lkw)
+        train_loader = DataLoader(train_dataset, sampler=train_sampler, **loader_kwargs)
         val_loader = DataLoader(
-            val_dataset, sampler=val_sampler, **{**lkw, "batch_size": 1}
+            val_dataset, sampler=val_sampler, **{**loader_kwargs, "batch_size": 1}
         )
 
         # img_size from CSV metadata (no binary read needed).

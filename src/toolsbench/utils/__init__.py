@@ -13,8 +13,9 @@ from .solver_utils import (
     save_prediction_results as save_prediction_results,
     crop_psnr as crop_psnr,
     seed_everything as seed_everything,
+    setup_distributed_env as setup_distributed_env,
 )
-from .trainer import _Trainer as _Trainer
+from .trainer import _Trainer as _Trainer, TrainingHistory as TrainingHistory
 from .tomo_utils import (
     WalnutMemoryMaps as WalnutMemoryMaps,
     WalnutEntry as WalnutEntry,

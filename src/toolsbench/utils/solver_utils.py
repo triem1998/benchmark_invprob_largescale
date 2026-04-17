@@ -274,3 +274,39 @@ def seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def setup_distributed_env() -> int:
+    """Initialise the distributed environment and return ``world_size``.
+
+    Checks whether ``RANK`` / ``WORLD_SIZE`` env-vars are already set (e.g.
+    launched via ``torchrun``).  If not, attempts to export them via
+    ``submitit.helpers.TorchDistributedEnvironment`` (SLURM jobs).  Falls
+    back silently to ``world_size=1`` for single-process runs.
+
+    Returns
+    -------
+    int
+        The ``WORLD_SIZE`` discovered (1 if non-distributed).
+    """
+    import os
+
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        world_size = int(os.environ["WORLD_SIZE"])
+        print(f"Distributed environment already initialized: world_size={world_size}")
+        return world_size
+
+    try:
+        import submitit
+
+        submitit.helpers.TorchDistributedEnvironment().export(
+            set_cuda_visible_devices=False
+        )
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        print(
+            f"Initialized distributed environment via submitit: world_size={world_size}"
+        )
+        return world_size
+    except (ImportError, RuntimeError) as e:
+        print(f"Running in non-distributed mode: {e}")
+        return 1
