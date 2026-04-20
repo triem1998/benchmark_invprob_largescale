@@ -126,9 +126,11 @@ def image_to_skymodel(image_fits, ra_center, dec_center):
 
     sky_model, _, _ = SkyModel.get_sky_model_from_optical_fits_image(
         str(image_fits),
+        default_map_units="Jy/pixel",
         move_object=True,  # Default move to MeerKAT center
         new_ra=ra_center,
         new_dec=dec_center,
+        rescale_flux=False,
         # flux_percentile=0.0,
     )
 

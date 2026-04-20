@@ -175,7 +175,7 @@ class Dataset(BaseDataset):
                 )
 
                 source_fits_path = data_path / fits_name
-                img_np = load_and_resize_image(source_fits_path, self.image_size)
+                img_np = load_and_resize_image(source_fits_path, self.image_size, normalize=False)
                 new_header = load_new_header(source_fits_path, self.image_size)
                 fits.PrimaryHDU(img_np, header=new_header).writeto(
                     cached_resized_fits_path, overwrite=True
@@ -237,7 +237,7 @@ class Dataset(BaseDataset):
             imager = DeepinvDirtyImager(imager_config, device=device)
 
             # create_deepinv_physics loads the MS and builds the operator
-            physics, measurements = imager.create_deepinv_physics(
+            physics, measurements, weights = imager.create_deepinv_physics(
                 visibility_path=str(ms_path),
                 visibility_format="MS",
                 visibility_column="DATA",
@@ -253,7 +253,8 @@ class Dataset(BaseDataset):
                 ground_truth=ground_truth,
                 measurement=measurements,
                 physics=physics,
-                min_pixel=0.0,
-                max_pixel=1.0,
+                weights=weights,
+                min_pixel=float(ground_truth.min()),
+                max_pixel=float(ground_truth.max()),
                 ground_truth_shape=ground_truth.shape,
             )

@@ -1,7 +1,10 @@
 ## Benchmarks
 benchmark_*/data/
 benchmark_*/outputs/
+benchmark_*/evaluation_output/
+debug_output/
 .cluster_data*
+karabo.sif
 
 ## Deepinv
 __cache__/

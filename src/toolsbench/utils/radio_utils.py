@@ -21,8 +21,8 @@ MEERKAT_LOCATION = EarthLocation(
 )
 
 
-def load_and_resize_image(image_path, image_size):
-    """Load and resize m1_n.fits image.
+def load_and_resize_image(image_path, image_size, normalize=False):
+    """Load and resize a FITS image.
 
     Returns
     -------
@@ -36,7 +36,7 @@ def load_and_resize_image(image_path, image_size):
     max_val = float(np.max(img))
 
     # Normalize to [0, 1]
-    if max_val > 1.0:
+    if normalize and max_val > 1.0:
         img = img / max_val
 
     img = np.squeeze(img)
@@ -55,7 +55,7 @@ def load_and_resize_image(image_path, image_size):
     if h != image_size or w != image_size:
         zoom_factors = (1, image_size / h, image_size / w)
         resized_img = zoom(img, zoom_factors, order=3)
-        resized_img = np.clip(resized_img, 0, 1)
+        #resized_img = np.clip(resized_img, 0, 1)
 
     return np.ascontiguousarray(resized_img, dtype=np.float32)
 

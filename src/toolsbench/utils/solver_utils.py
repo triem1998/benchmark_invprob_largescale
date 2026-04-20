@@ -8,6 +8,7 @@ used by both single-GPU and distributed PnP solvers.
 from pathlib import Path
 
 import torch
+import copy
 
 
 def compute_step_size_from_operator(operator, ground_truth: torch.Tensor) -> float:
@@ -38,7 +39,9 @@ def initialize_reconstruction(
     operator,
     measurements,
     device: torch.device,
-    method: str = "pseudo_inverse",
+    method: str = "adjoint",
+    clip_range: tuple = None,
+    weights: torch.Tensor = None,
 ) -> torch.Tensor:
     """Initialize the reconstruction signal.
 
@@ -59,6 +62,8 @@ def initialize_reconstruction(
           images / bounded domains).
         - ``"adjoint"``: ``x_0 = Aᵀy`` without clamping (radio, tomography,
           or any unbounded physical domain).
+    clip_range: (sig_min, sig_max) for scaling the dirty image
+    weights: Optional density weights for weighted dirty image
 
     Returns
     -------
@@ -69,11 +74,36 @@ def initialize_reconstruction(
         return torch.zeros(signal_shape, device=device)
 
     elif method == "pseudo_inverse":
-        x_init = operator.A_dagger(measurements)
-        return x_init.clamp(0, 1)
+        if weights is not None:
+            # Create a temporary weighted operator for a sharper init
+            weighted_op = copy.deepcopy(operator)
+            weighted_op.setWeight(weights.to(device))
+            dirty = weighted_op.A_dagger(measurements)
+        else:
+            dirty = operator.A_dagger(measurements)
+
+        if clip_range is not None:
+            sig_min, sig_max = clip_range
+            # Peak-normalize dirty image to signal range and clamp
+            x_init = dirty * sig_max / dirty.max()
+            x_init = x_init.clamp(sig_min, sig_max)
+        return x_init
 
     elif method == "adjoint":
-        return operator.A_adjoint(measurements)
+        if weights is not None:
+            # Create a temporary weighted operator for a sharper init
+            weighted_op = copy.deepcopy(operator)
+            weighted_op.setWeight(weights.to(device))
+            dirty = weighted_op.A_adjoint(measurements)
+        else:
+            dirty = operator.A_adjoint(measurements)
+
+        if clip_range is not None:
+            sig_min, sig_max = clip_range
+            # Peak-normalize dirty image to signal range and clamp
+            x_init = dirty * sig_max / dirty.max()
+            x_init = x_init.clamp(sig_min, sig_max)
+        return x_init
 
     else:
         raise ValueError(

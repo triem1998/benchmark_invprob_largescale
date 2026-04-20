@@ -57,7 +57,7 @@ def generate_data_for_size(cfg, image_size):
             return
     else:
         try:
-            resized_img = load_and_resize_image(fits_file, image_size)
+            resized_img = load_and_resize_image(fits_file, image_size, normalize=False)
         except Exception as e:
             print(f"Could not load/process example image: {e}")
             return
