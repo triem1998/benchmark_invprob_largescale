@@ -1,9 +1,11 @@
 """Solver utilities shared across PnP solvers.
 
 This module provides helpers for step size computation, reconstruction
-initialization, and normalization strategies, used by both single-GPU
-and distributed PnP solvers.
+initialization, normalization strategies, and training curve plotting,
+used by both single-GPU and distributed PnP solvers.
 """
+
+from pathlib import Path
 
 import torch
 
@@ -131,3 +133,180 @@ def denormalize_from_unit(
         Tensor in the original physical domain.
     """
     return x_01 * norm_scale + norm_min
+
+
+# ---------------------------------------------------------------------------
+# Visualisation helpers
+# ---------------------------------------------------------------------------
+
+
+def _to_mid_slice(x):
+    """Return the central 2-D slice from the first sample of a 3-D or batched tensor."""
+    t = x.detach().float()
+    if t.ndim == 5:
+        t = t[0, 0]
+    elif t.ndim == 4:
+        t = t[0, 0]
+    if t.ndim == 3:
+        t = t[t.shape[0] // 2]
+    return t.cpu().numpy()
+
+
+def save_training_figure(
+    out_path,
+    x,
+    x_sparse,
+    x_hat,
+    psnr_db: float,
+    title: str,
+    x_init=None,
+    psnr_init_db=None,
+    psnr_sparse_db=None,
+) -> None:
+    """Save a central-slice comparison figure (GT | Sparse | Init | Pred).
+
+    Works for any 2-D or 3-D tensor: a single central slice is extracted and
+    displayed per panel.  Suitable for both natural-image (Urban100) and
+    volumetric (Walnut CT) training runs.
+
+    Parameters
+    ----------
+    out_path : str or Path
+        Destination file path (parent directories are created automatically).
+    x : Tensor
+        Ground-truth image/volume.
+    x_sparse : Tensor or None
+        Sparse/FBP warm-start reconstruction, or ``None`` to omit the panel.
+    x_hat : Tensor
+        Model prediction.
+    psnr_db : float
+        PSNR of *x_hat* vs *x* (shown in the panel title).
+    title : str
+        Figure suptitle (e.g. ``"epoch=5 step=12"``).
+    x_init : Tensor or None
+        Untrained-model prediction, or ``None`` to omit the panel.
+    psnr_init_db : float or None
+        PSNR of *x_init* (shown when provided).
+    psnr_sparse_db : float or None
+        PSNR of *x_sparse* (shown when provided).
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+
+    gt = _to_mid_slice(x)
+    pred = _to_mid_slice(x_hat)
+    sparse = _to_mid_slice(x_sparse) if x_sparse is not None else None
+    init_img = _to_mid_slice(x_init) if x_init is not None else None
+
+    sparse_label = (
+        f"Sparse ({psnr_sparse_db:.2f} dB)" if psnr_sparse_db is not None else "Sparse"
+    )
+    init_label = (
+        f"Untrained ({psnr_init_db:.2f} dB)"
+        if psnr_init_db is not None
+        else "Untrained"
+    )
+    panels = [("GT", gt)]
+    if sparse is not None:
+        panels.append((sparse_label, sparse))
+    if init_img is not None:
+        panels.append((init_label, init_img))
+    panels.append((f"Pred ({psnr_db:.2f} dB)", pred))
+
+    vmin, vmax = float(gt.min()), float(gt.max())
+    fig, axes = plt.subplots(1, len(panels), figsize=(4 * len(panels), 4))
+    if len(panels) == 1:
+        axes = [axes]
+    for ax, (name, img) in zip(axes, panels):
+        ax.imshow(img, cmap="gray", vmin=vmin, vmax=vmax)
+        ax.set_title(name)
+        ax.axis("off")
+    fig.suptitle(title)
+    fig.tight_layout()
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=120)
+    plt.close(fig)
+
+
+def save_prediction_results(tensor, path) -> None:
+    """Save the first 3-D volume from a (possibly batched) tensor to a .pt file."""
+    import torch
+
+    t = tensor.detach().cpu()
+    if t.ndim == 5:
+        t = t[0]
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(t, p)
+
+
+def crop_psnr(x_hat, x, crop: int = 100):
+    """PSNR over the central crop of a 3-D volume, normalised by the crop's range.
+
+    Avoids cone-beam edge artefacts.  Both tensors must have shape (B, C, D, H, W).
+
+    Returns a scalar Tensor (dB).
+    """
+    import torch
+
+    c = slice(crop, -crop)
+    tgt = x[..., c, c, c]
+    pred = x_hat[..., c, c, c]
+    range_val = tgt.amax() - tgt.amin()
+    mse = torch.mean((tgt - pred) ** 2)
+    return 10.0 * torch.log10((range_val**2).clamp(min=1e-12) / mse.clamp(min=1e-12))
+
+
+def seed_everything(seed: int) -> None:
+    """Seed Python, NumPy and PyTorch RNGs for reproducibility."""
+    import random
+    import numpy as np
+    import torch
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def setup_distributed_env() -> int:
+    """Initialise the distributed environment and return ``world_size``.
+
+    Checks whether ``RANK`` / ``WORLD_SIZE`` env-vars are already set (e.g.
+    launched via ``torchrun``).  If not, attempts to export them via
+    ``submitit.helpers.TorchDistributedEnvironment`` (SLURM jobs).  Falls
+    back silently to ``world_size=1`` for single-process runs.
+
+    Returns
+    -------
+    int
+        The ``WORLD_SIZE`` discovered (1 if non-distributed).
+    """
+    import os
+
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        world_size = int(os.environ["WORLD_SIZE"])
+        print(f"Distributed environment already initialized: world_size={world_size}")
+        return world_size
+
+    try:
+        import submitit
+
+        submitit.helpers.TorchDistributedEnvironment().export(
+            set_cuda_visible_devices=False
+        )
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        print(
+            f"Initialized distributed environment via submitit: world_size={world_size}"
+        )
+        return world_size
+    except (ImportError, RuntimeError) as e:
+        print(f"Running in non-distributed mode: {e}")
+        return 1

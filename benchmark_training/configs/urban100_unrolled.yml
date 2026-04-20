@@ -1,0 +1,43 @@
+# Benchopt configuration for distributed benchmarking with Urban100
+# This file specifies testing with 2 distributed processes
+
+# Objective filter
+objective:
+  - reconstruction_objective
+
+# Dataset filters
+dataset:
+  - urban100:
+      image_size: 1024
+      num_operators: 4
+      train_images: 32
+      val_images: 8
+      batch_size: 1
+      noise_level: 0.1
+
+
+# Solver filters
+solver:
+  - UnrolledPnP:
+      denoiser: drunet
+      n_iter: 4
+      init_stepsize: 0.9
+      denoiser_sigma: 0.05
+      learning_rate: 1e-4
+      model_learning_rate: 1e-5
+      grad_accumulation_steps: 4
+      use_profiler: false
+      train_algo_params: true
+      slurm_gres, slurm_ntasks_per_node, slurm_nodes, distribute_model, patch_size, overlap, max_batch_size, checkpoint_batches: [
+        ["gpu:1", 1, 1, false, 0, 0, 0, 'never'],
+        ["gpu:1", 1, 1, true, 256, 32, 1, 'always'],
+        ["gpu:1", 1, 1, true, 256, 32, 8, 'always'],
+        ["gpu:1", 1, 1, true, 256, 32, 16, 'always'],
+        ["gpu:2", 2, 1, true, 256, 32, 8, 'always'],
+        ["gpu:2", 2, 1, true, 256, 32, 8, 'auto'],
+
+      ]
+
+# Run parameters
+max-runs: 5
+n-repetitions: 1

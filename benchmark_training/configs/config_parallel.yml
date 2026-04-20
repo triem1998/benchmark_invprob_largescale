@@ -1,0 +1,13 @@
+backend: submitit
+slurm_time: 30
+slurm_stderr_to_stdout: True  # redirect all outputs to a single log file
+slurm_additional_parameters:
+  cpus-per-task: 20        # requires 20 CPUs per job
+  qos: qos_gpu_h100-dev      # Queue used for the jobs
+  account: #your_account_here
+  constraint: h100
+slurm_setup:  # sbatch script commands added before the main job
+  - module purge
+  - module load arch/h100
+  - module load pytorch-gpu/py3/2.7.0
+  - export NCCL_DEBUG=INFO
