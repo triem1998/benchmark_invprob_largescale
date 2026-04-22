@@ -239,13 +239,14 @@ class CsvTrainer(dinv.Trainer):
         meas = _mid_slice(y)
         pred = _mid_slice(x_net)
 
-        vmin, vmax = float(gt.min()), float(gt.max())
-        _gt_t = torch.tensor(gt).unsqueeze(0).unsqueeze(0)
-        _pred_t = torch.tensor(pred).unsqueeze(0).unsqueeze(0)
-        _meas_t = torch.tensor(meas).unsqueeze(0).unsqueeze(0)
+        # PSNR on full 3-D volume (not just the displayed slice)
+        _gt_t = x[0:1].detach().cpu().float()
+        _pred_t = x_net[0:1].detach().cpu().float()
+        _meas_t = y[0:1].detach().cpu().float()
         psnr_val = float(PSNR(max_pixel=None)(_pred_t, _gt_t))
         psnr_meas = float(PSNR(max_pixel=None)(_meas_t, _gt_t))
 
+        vmin, vmax = float(gt.min()), float(gt.max())
         fig, axes = plt.subplots(1, 3, figsize=(12, 4))
         for ax, img, title in zip(
             axes,

@@ -18,11 +18,11 @@ general:
   seed: 0
 
 training:
-  num_epochs: 5 # take more epochs for better convergence
+  num_epochs: 30 # take more epochs for better convergence
   learning_rate: 1.0e-4
   grad_clip: 1.0
   grad_accumulation_steps: 2
-  ckp_interval: 2             # checkpoint every N epochs
+  ckp_interval: 5             # checkpoint every N epochs
   eval_interval: 1
 
 distributed:
@@ -38,7 +38,7 @@ slurm:
   gpus_per_node: 4
   ntasks_per_node: 4
   cpus_per_task: 24
-  time: "10:00:00"
+  time: "12:00:00"
   account: fio@h100
   constraint: h100
   qos: qos_gpu_h100-t3
