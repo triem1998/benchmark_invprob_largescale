@@ -1,0 +1,50 @@
+general:
+  execution_mode: submitit # local        # submitit | local
+  run_name: demo-cryo-supervised
+  output_root: ./runs
+
+  #input_dir: ./dataset/empiar-11830
+  input_dir: /lustre/fswork/projects/rech/fio/commun/cryolithe/empiar-11830
+
+  batch_size: 1
+  num_workers: 1
+  pin_memory: true
+  prefetch_factor: 1
+  persistent_workers: true
+
+  max_train_vols:  96         # null = use all remaining after val split
+  max_val_vols:  41              # explicit number of validation volumes
+  target_shape: null          # [D, H, W] to resample volumes; null = no resize
+  seed: 0
+
+training:
+  num_epochs: 5 # take more epochs for better convergence
+  learning_rate: 1.0e-4
+  grad_clip: 1.0
+  grad_accumulation_steps: 2
+  ckp_interval: 2             # checkpoint every N epochs
+  eval_interval: 1
+
+distributed:
+  distribute_model: true
+  patch_size: [128, 128, 128] # [32, 32, 32]
+  overlap: [16, 16, 16] # [8, 8, 8]
+  max_batch_size: 1
+  checkpoint_batches: auto
+
+slurm:
+  job_name: demo-cryo-supervised
+  nodes: 4
+  gpus_per_node: 4
+  ntasks_per_node: 4
+  cpus_per_task: 24
+  time: "10:00:00"
+  account: fio@h100
+  constraint: h100
+  qos: qos_gpu_h100-t3
+  stderr_to_stdout: true
+  setup:
+    - "module purge"
+    - "module load arch/h100"
+    - "module load pytorch-gpu/py3/2.7.0"
+    - "export NCCL_DEBUG=INFO"
