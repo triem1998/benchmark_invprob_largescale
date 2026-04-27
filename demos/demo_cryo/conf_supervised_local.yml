@@ -20,6 +20,8 @@ general:
 training:
   num_epochs: 2
   learning_rate: 1.0e-4
+  scheduler_milestones: [10]  # epochs at which to drop the LR
+  scheduler_gamma: 0.1        # multiplicative factor at each milestone
   grad_clip: 1.0
   grad_accumulation_steps: 1    # accumulate gradients over N batches before stepping
   ckp_interval: 10             # checkpoint every N epochs

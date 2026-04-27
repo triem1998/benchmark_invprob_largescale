@@ -46,6 +46,8 @@ class RunConfig:
     # ── Training ────────────────────────────────────────────────────────────
     num_epochs: int = 100
     learning_rate: float = 1e-4
+    scheduler_milestones: tuple[int, ...] = (10,)  # epochs at which to drop the LR
+    scheduler_gamma: float = 0.1                    # multiplicative factor at each milestone
     grad_clip: float | None = 1.0
     ckp_interval: int = 10  # checkpoint every N epochs
     eval_interval: int = 1
@@ -157,12 +159,16 @@ class CsvTrainer(dinv.Trainer):
 
         row = {
             "epoch": step,
+            "lr": self.optimizer.param_groups[0]["lr"],
             **{k: v for k, v in logs.items() if isinstance(v, (int, float))},
         }
         fname = "train_epochs.csv" if train else "val_epochs.csv"
         append_metrics_row(Path(metrics_dir) / fname, row)
 
         if train:
+            scheduler = getattr(self, "_scheduler", None)
+            if scheduler is not None:
+                scheduler.step()
             t_train = time.perf_counter() - getattr(
                 self, "_train_epoch_start", time.perf_counter()
             )
@@ -208,6 +214,24 @@ class CsvTrainer(dinv.Trainer):
                     ckpt_path,
                 )
                 print(f"[ckpt] saved {ckpt_path}", flush=True)
+
+            # ── Best checkpoint (track highest val PSNR) ─────────────────
+            val_psnr = logs.get("PSNR", None)
+            if val_psnr is not None:
+                best = getattr(self, "_best_val_psnr", float("-inf"))
+                if val_psnr > best:
+                    self._best_val_psnr = val_psnr
+                    best_path = Path(ckpt_dir) / "ckp_best.pth"
+                    torch.save(
+                        {
+                            "epoch": ep,
+                            "val_psnr": val_psnr,
+                            "model_state_dict": self.model.state_dict(),
+                            "optimizer_state_dict": self.optimizer.state_dict(),
+                        },
+                        best_path,
+                    )
+                    print(f"[ckpt] new best PSNR={val_psnr:.4f} dB → saved {best_path}", flush=True)
 
     def _save_val_image(self, epoch, x, y, x_net) -> None:
         """Save mid-slice PNG for one validation image (rank 0 only)."""
@@ -323,6 +347,11 @@ def run_training(cfg: RunConfig) -> None:
         physics = dinv.physics.Physics().to(ctx.device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg.learning_rate))
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer,
+            milestones=list(cfg.scheduler_milestones),
+            gamma=float(cfg.scheduler_gamma),
+        )
         accum = max(1, int(cfg.grad_accumulation_steps))
 
         trainer = CsvTrainer(
@@ -349,6 +378,7 @@ def run_training(cfg: RunConfig) -> None:
             log_train_batch=False,
             optimizer_step_multi_dataset=False,  # lets compute_loss own zero_grad+step (needed for accum)
         )
+        trainer._scheduler = scheduler
         trainer._metrics_dir = ensure_dir(output_dir / "metrics")
         trainer._images_dir = ensure_dir(output_dir / "images")
         trainer._ckpt_dir = (

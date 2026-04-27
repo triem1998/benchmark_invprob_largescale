@@ -178,6 +178,10 @@ def _build_supervised_config(conf: dict):
         seed=int(general.get("seed", default.seed)),
         num_epochs=int(training.get("num_epochs", default.num_epochs)),
         learning_rate=float(training.get("learning_rate", default.learning_rate)),
+        scheduler_milestones=tuple(
+            int(v) for v in training.get("scheduler_milestones", default.scheduler_milestones)
+        ),
+        scheduler_gamma=float(training.get("scheduler_gamma", default.scheduler_gamma)),
         grad_clip=training.get("grad_clip", default.grad_clip),
         grad_accumulation_steps=int(
             training.get("grad_accumulation_steps", default.grad_accumulation_steps)

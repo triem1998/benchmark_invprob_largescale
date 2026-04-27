@@ -18,10 +18,12 @@ general:
   seed: 0
 
 training:
-  num_epochs: 30 # take more epochs for better convergence
+  num_epochs: 20 # take more epochs for better convergence
   learning_rate: 1.0e-4
+  scheduler_milestones: [10]  # epochs at which to drop the LR
+  scheduler_gamma: 0.1        # multiplicative factor at each milestone
   grad_clip: 1.0
-  grad_accumulation_steps: 2
+  grad_accumulation_steps: 4
   ckp_interval: 5             # checkpoint every N epochs
   eval_interval: 1
 
