@@ -35,7 +35,7 @@ class Dataset(BaseDataset):
     name = "tomography_3d_train"
 
     parameters = {
-        "input_dir": ["None"],
+        "input_dir": ["/lustre/fswork/projects/rech/fio/commun/Walnut-CBCT"],
         ## TODO: specify dataset source/path; will later add installation + download from Hugging Face
         "num_projs": [[30, 50, 100]],
         "batch_size": [1],

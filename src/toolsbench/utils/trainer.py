@@ -163,6 +163,9 @@ class _Trainer:
         self.lambda_relaxation = lambda_relaxation
         self.ref_opnorm = float(ref_opnorm)
 
+        # Grad norm from the most recent optimiser step (updated by _optimizer_step_and_clamp).
+        self._last_grad_norm: float = float("nan")
+
         # -----------------------------------------------------------------
         # Loss / metric history — accumulated across epochs.
         # ``all_loss_steps`` is exposed as a *shared reference* to the Solver
@@ -196,6 +199,7 @@ class _Trainer:
 
         # Lazy standard-PSNR metric (generic / Urban100 path).
         self._psnr_fn = None
+        self.last_psnr_by_key: dict = {}
 
         # Output directories — created only on rank 0 (non-rank-0 processes
         # never write to them, so there's no need to create empty dirs).
@@ -313,9 +317,10 @@ class _Trainer:
 
     def _optimizer_step_and_clamp(self):
         """Gradient-clip → optimiser step → zero grad → clamp algo params."""
-        torch.nn.utils.clip_grad_norm_(
-            [p for group in self.optimizer.param_groups for p in group["params"]],
-            max_norm=self.clip_grad_norm,
+        all_params = [p for group in self.optimizer.param_groups for p in group["params"]]
+        # Compute total grad norm *before* clipping so it can be logged.
+        self._last_grad_norm = float(
+            torch.nn.utils.clip_grad_norm_(all_params, max_norm=self.clip_grad_norm)
         )
         self.optimizer.step()
         self.optimizer.zero_grad()
@@ -416,10 +421,17 @@ class _Trainer:
             # ---- logging ------------------------------------------------
             if is_rank0 and (step_idx + 1) % max(1, self.log_every) == 0:
                 np_key = num_proj_key if num_proj_key is not None else "-"
+                # grad norm is updated only on accumulation steps; use last known value.
+                grad_norm_str = (
+                    f"{self._last_grad_norm:.4f}"
+                    if not (self._last_grad_norm != self._last_grad_norm)  # not NaN
+                    else "n/a"
+                )
                 print(
                     f"  [train step {step_idx + 1}/{total_steps}] "
                     f"np={np_key} | opnorm={sample_opnorm:.3f} | "
                     f"loss={step_loss:.6f} | psnr={step_psnr:.2f} dB | "
+                    f"grad_norm={grad_norm_str} | "
                     f"fwd={_t2-_t1:.3f}s bwd={_t3-_t2:.3f}s",
                     flush=True,
                 )
@@ -428,8 +440,11 @@ class _Trainer:
                     {
                         "epoch": epoch,
                         "step": step_idx,
+                        "num_proj": num_proj_key if num_proj_key is not None else -1,
                         "loss": step_loss,
                         "psnr": step_psnr,
+                        "grad_norm": self._last_grad_norm,
+                        "lr": self.optimizer.param_groups[-1]["lr"],
                     },
                 )
 
@@ -501,6 +516,7 @@ class _Trainer:
         self.model.eval()
         psnr_vals: list[float] = []
         loss_vals: list[float] = []
+        psnr_by_key: dict[object, list[float]] = {}
         is_rank0 = self.ctx is None or self.ctx.rank == 0
         _val_t0 = time.perf_counter()
 
@@ -527,6 +543,7 @@ class _Trainer:
                 step_loss = float(torch.nn.functional.mse_loss(x_hat, x))
                 psnr_vals.append(step_psnr)
                 loss_vals.append(step_loss)
+                psnr_by_key.setdefault(num_proj_key, []).append(step_psnr)
                 self.all_val_loss_steps.append(step_loss)
 
                 # ---- cache init images per step for later comparison ----
@@ -608,6 +625,20 @@ class _Trainer:
                 f"per sample={per_sample:.1f}s ({n_val} samples)",
                 flush=True,
             )
+        # Compute and store per-key PSNR means.
+        self.last_psnr_by_key = {
+            k: float(torch.tensor(v).mean())
+            for k, v in psnr_by_key.items()
+        }
+        if is_rank0 and len(self.last_psnr_by_key) > 1:
+            parts = "  |  ".join(
+                f"np={k}: {v:.2f} dB"
+                for k, v in sorted(
+                    self.last_psnr_by_key.items(),
+                    key=lambda kv: (kv[0] is None, kv[0]),
+                )
+            )
+            print(f"  [val epoch {epoch}] per-key PSNR: {parts}", flush=True)
 
         mean_psnr = float(torch.tensor(psnr_vals).mean()) if psnr_vals else 0.0
         mean_loss = float(sum(loss_vals) / len(loss_vals)) if loss_vals else 0.0

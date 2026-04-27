@@ -83,6 +83,8 @@ class Solver(BaseSolver):
         "eval_every": [1],  # Run validation every N epochs.
         "log_every": [1],  # Print/log metrics every N train steps.
         "save_debug_every": [0],  # Save debug figures every N steps (0 = disabled).
+        "lr_decay_rate": [0.0],  # Exponential LR decay per epoch (0 = constant LR).
+        "lr_min": [5e-6],        # LR floor: decay stops when LR reaches this value.
         # --- Reproducibility ---
         "seed": [0],  # RNG seed.
     }
@@ -194,6 +196,9 @@ class Solver(BaseSolver):
         # Collect raw denoiser parameters before any wrapping (distribute / compile)
         # so the optimizer can access them regardless of wrapping.
         denoiser_params = list(denoiser.parameters())
+
+        # Keep a direct reference to the unwrapped denoiser for checkpointing.
+        self._denoiser = denoiser
 
         # distribute data fidelity separately
         data_fidelity = distribute(L2(), ctx)
@@ -331,6 +336,12 @@ class Solver(BaseSolver):
         print(f"[timing] optimizer setup: {time.perf_counter()-_t:.1f}s", flush=True)
 
         self.optimizer = optimizer
+        if float(self.lr_decay_rate) > 0:
+            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=float(self.lr_decay_rate))
+            print(f"[lr_schedule] exponential decay: gamma={self.lr_decay_rate} lr_min={self.lr_min}", flush=True)
+        else:
+            self.scheduler = None
+            print("[lr_schedule] constant LR", flush=True)
 
         # Track training and validation history
         self.history = TrainingHistory()
@@ -430,6 +441,12 @@ class Solver(BaseSolver):
             ctx: Optional distributed context
         """
         epoch = 0
+        best_val_psnr = float("-inf")
+        self._last_psnr_by_key: dict = {}
+        is_rank0 = ctx is None or ctx.rank == 0
+        best_model_dir = Path("images_results") / self.name
+        best_model_dir.mkdir(parents=True, exist_ok=True)
+        best_model_path = best_model_dir / "best_drunet.pth"
         while True:
             keep_going = cb()
 
@@ -451,8 +468,27 @@ class Solver(BaseSolver):
             train_psnr, epoch_loss = self._trainer.train_epoch(
                 self.train_dataloader, epoch
             )
+
+            # Step LR scheduler.
+            if self.scheduler is not None:
+                self.scheduler.step()
+                # Clamp to lr_min floor.
+                for pg in self.optimizer.param_groups:
+                    pg["lr"] = max(pg["lr"], float(self.lr_min))
+                if is_rank0:
+                    current_lr = self.optimizer.param_groups[-1]["lr"]
+                    print(f"[lr_schedule] epoch {epoch + 1}: lr={current_lr:.2e}", flush=True)
+
             if (epoch + 1) % max(1, int(self.eval_every)) == 0:
                 val_psnr, val_loss = self._trainer.evaluate(self.val_dataloader, epoch)
+                # Save best DRUNet denoiser checkpoint (rank 0 only)
+                if (ctx is None or ctx.rank == 0) and val_psnr > best_val_psnr:
+                    best_val_psnr = val_psnr
+                    torch.save(self._denoiser.state_dict(), best_model_path)
+                    print(
+                        f"[checkpoint] New best val PSNR: {best_val_psnr:.2f} dB — "
+                        f"DRUNet saved to {best_model_path}"
+                    )
             else:
                 val_psnr = float("nan")
                 val_loss = float("nan")
@@ -460,6 +496,9 @@ class Solver(BaseSolver):
             # Advance profiler schedule
             if self.profiler is not None:
                 self.profiler.step()
+
+            # Store per-key PSNR snapshot (populated by _Trainer.evaluate)
+            self._last_psnr_by_key = dict(self._trainer.last_psnr_by_key)
 
             # Capture GPU memory stats for this epoch
             if self.device.type == "cuda":
@@ -518,6 +557,16 @@ class Solver(BaseSolver):
                         f"Epoch {epoch + 1} | train PSNR: {train_psnr:.2f} dB | "
                         f"val PSNR: {val_psnr:.2f} dB | -val PSNR: {-val_psnr:.2f}"
                     )
+                # Print per-key PSNR breakdown when multiple keys are present
+                if len(self._last_psnr_by_key) > 1:
+                    parts = "  |  ".join(
+                        f"np={k}: {v:.2f} dB"
+                        for k, v in sorted(
+                            self._last_psnr_by_key.items(),
+                            key=lambda kv: (kv[0] is None, kv[0]),
+                        )
+                    )
+                    print(f"  per-key val PSNR: {parts}")
 
             epoch += 1
 
@@ -585,6 +634,11 @@ class Solver(BaseSolver):
             result["gpu_memory_max_allocated_mb"] = last["gpu_memory_max_allocated_mb"]
             result["gpu_memory_reserved_mb"] = last["gpu_memory_reserved_mb"]
             result["gpu_available_memory_mb"] = last["gpu_available_memory_mb"]
+        # Per-key PSNR (e.g. np=30/50/100 for tomography-3D)
+        psnr_by_key = getattr(self, "_last_psnr_by_key", {})
+        for k, v in psnr_by_key.items():
+            key_str = f"val_psnr_np{k}" if k is not None else "val_psnr_key_none"
+            result[key_str] = v
         return result
 
     def get_next(self, stop_val):
