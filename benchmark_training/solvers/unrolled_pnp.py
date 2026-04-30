@@ -51,7 +51,7 @@ class Solver(BaseSolver):
         # --- Distributed processing ---
         "distribute_model": [True],
         # Wrap model in DistributedProcessing (patch-based).
-        "torch_compile": [False],  # Apply torch.compile to the model.
+        "torch_compile": [False],  # Apply torch.compile to the denoiser.
         "patch_size": [128],  # Spatial patch size for DistributedProcessing.
         "overlap": [32],  # Overlap between adjacent patches.
         "max_batch_size": [1],  # Max patch-batch size inside DistributedProcessing.
@@ -84,7 +84,7 @@ class Solver(BaseSolver):
         "log_every": [1],  # Print/log metrics every N train steps.
         "save_debug_every": [0],  # Save debug figures every N steps (0 = disabled).
         "lr_decay_rate": [0.0],  # Exponential LR decay per epoch (0 = constant LR).
-        "lr_min": [5e-6],        # LR floor: decay stops when LR reaches this value.
+        "lr_min": [5e-6],  # LR floor: decay stops when LR reaches this value.
         # --- Reproducibility ---
         "seed": [0],  # RNG seed.
     }
@@ -203,7 +203,30 @@ class Solver(BaseSolver):
         # distribute data fidelity separately
         data_fidelity = distribute(L2(), ctx)
 
-        # Build PnP prior with plain denoiser
+        # Compile denoiser first (before distribute so torch.compile sees a pure Denoiser subclass).
+        if self.torch_compile:
+            denoiser = torch.compile(denoiser)
+            print("[unrolled_pnp] denoiser compiled with torch.compile")
+
+        # When torch_compile is on, distribute the denoiser explicitly here because
+        # torch.compile returns an OptimizedModule (not a Denoiser subclass), so
+        # distribute(model) would silently skip it otherwise.
+        if self.torch_compile and self.distribute_model and ctx is not None:
+            tiling_dims = (
+                (-3, -2, -1) if len(self.ground_truth_shape) == 5 else (-2, -1)
+            )
+            denoiser = distribute(
+                denoiser,
+                ctx,
+                type_object="denoiser",
+                patch_size=self.patch_size,
+                overlap=self.overlap,
+                tiling_dims=tiling_dims,
+                max_batch_size=self.max_batch_size,
+                checkpoint_batches=self.checkpoint_batches,
+            )
+            print("[unrolled_pnp] denoiser wrapped in DistributedProcessing")
+
         prior = PnP(denoiser=denoiser)
 
         # Effective step size: init_stepsize / operator_norm
@@ -232,8 +255,8 @@ class Solver(BaseSolver):
             unfold=True,
         )
 
-        # Distribute the whole model as one unit.
-        if self.distribute_model:
+        # Distribute the whole model (denoiser already wrapped, so it is skipped).
+        if self.distribute_model and ctx is not None:
             model = distribute(
                 model,
                 ctx,
@@ -242,10 +265,6 @@ class Solver(BaseSolver):
                 max_batch_size=self.max_batch_size,
                 checkpoint_batches=self.checkpoint_batches,
             )
-
-        # Optionally compile the (distributed) model
-        if self.torch_compile:
-            model = torch.compile(model)
 
         return model, denoiser_params
 
@@ -337,8 +356,13 @@ class Solver(BaseSolver):
 
         self.optimizer = optimizer
         if float(self.lr_decay_rate) > 0:
-            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=float(self.lr_decay_rate))
-            print(f"[lr_schedule] exponential decay: gamma={self.lr_decay_rate} lr_min={self.lr_min}", flush=True)
+            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(
+                optimizer, gamma=float(self.lr_decay_rate)
+            )
+            print(
+                f"[lr_schedule] exponential decay: gamma={self.lr_decay_rate} lr_min={self.lr_min}",
+                flush=True,
+            )
         else:
             self.scheduler = None
             print("[lr_schedule] constant LR", flush=True)
@@ -477,7 +501,10 @@ class Solver(BaseSolver):
                     pg["lr"] = max(pg["lr"], float(self.lr_min))
                 if is_rank0:
                     current_lr = self.optimizer.param_groups[-1]["lr"]
-                    print(f"[lr_schedule] epoch {epoch + 1}: lr={current_lr:.2e}", flush=True)
+                    print(
+                        f"[lr_schedule] epoch {epoch + 1}: lr={current_lr:.2e}",
+                        flush=True,
+                    )
 
             if (epoch + 1) % max(1, int(self.eval_every)) == 0:
                 val_psnr, val_loss = self._trainer.evaluate(self.val_dataloader, epoch)
