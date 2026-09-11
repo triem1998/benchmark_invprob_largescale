@@ -21,7 +21,12 @@ from deepinv.optim import PGD
 from deepinv.optim.data_fidelity import L2
 from deepinv.optim.prior import PnP
 
-from deepinv.distributed.framework import DistributedReplicatedParameters
+# Only on deepinv revisions carrying the DDP work; needed for train_algo_params.
+try:
+    from deepinv.distributed.framework import DistributedReplicatedParameters
+except ImportError:  # pragma: no cover - depends on the installed deepinv
+    DistributedReplicatedParameters = None
+
 
 from toolsbench.utils.cryo import (
     AMP_DTYPES,

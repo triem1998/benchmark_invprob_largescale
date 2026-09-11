@@ -6,6 +6,7 @@ used by both single-GPU and distributed PnP solvers.
 """
 
 import torch
+import torch.distributed as dist
 import copy
 from deepinv.utils import TensorList
 
@@ -139,8 +140,6 @@ def sync_and_barrier(device: torch.device, ctx) -> None:
         return
     group = None
     if int(getattr(ctx, "dp_world_size", 1)) > 1:
-        import torch.distributed as dist
-
         group = dist.group.WORLD
     ctx.barrier(group=group)
 

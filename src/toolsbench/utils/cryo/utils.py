@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+import torch.distributed as dist
 
 __all__ = [
     "AMP_DTYPES",
@@ -73,8 +74,6 @@ def reduce_metrics_max(metrics: dict, ctx) -> dict:
     if int(getattr(ctx, "global_world_size", 0) or 0) <= 1:
         return metrics
     try:
-        import torch.distributed as dist
-
         if not dist.is_available() or not dist.is_initialized():
             return metrics
         keys = sorted(metrics)

@@ -11,7 +11,12 @@ from functools import partial
 
 import torch
 
-from deepinv.distributed.framework import DistributedStackedLinearPhysics
+# deepinv has moved this between layouts: re-exported from the package on some
+# revisions, only from the ``framework`` subpackage on others.
+try:
+    from deepinv.distributed import DistributedStackedLinearPhysics
+except ImportError:  # pragma: no cover - depends on the installed deepinv
+    from deepinv.distributed.framework import DistributedStackedLinearPhysics
 from deepinv.utils.tensorlist import TensorList
 
 from .tomography import TomographyEM
