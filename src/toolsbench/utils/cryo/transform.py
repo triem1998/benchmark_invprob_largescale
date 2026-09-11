@@ -1,6 +1,6 @@
 """Random 90°-multiple 3D rotation for the equivariance loss.
 
-Adapted from demo_cyo: toolcryo/transform.py. The 40-element ``k_set`` is
+The 40-element ``k_set`` is
 icecream's, kept verbatim so the EI loss sees the same distribution of
 augmentations; the deepinv ``Transform`` base class is dropped, since the two
 methods below are all the loss calls.

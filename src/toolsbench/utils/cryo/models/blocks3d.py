@@ -1,4 +1,4 @@
-# Vendored verbatim from demo_cyo: toolcryo/icecream_orig/models/buildingblocks_bf.py
+# Vendored from the IceCream 3D U-Net (buildingblocks_bf.py).
 """
 Code from: https://github.com/wolny/pytorch-3dunet/blob/master/pytorch3dunet/unet3d/buildingblocks.py
 """

@@ -1,4 +1,4 @@
-# Vendored verbatim from demo_cyo: toolcryo/physics/tomography.py
+# astra-backed tomography operator.
 """TomographyEM — the astra-toolbox forward-projection operator."""
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ class TomographyEM(dinv.physics.LinearPhysics):
     produces directly. Reordering is done once at load time (a real numpy copy)
     rather than per call, so ``A``/``A_adjoint`` contain no ``permute``: a
     permute is a zero-copy stride relabel whose *backward* hands astra and NCCL
-    non-contiguous gradients, which both reject. Same arrangement as demo_tomo,
+    non-contiguous gradients, which both reject.
     which passes ``TomographyWithAstra`` straight through for the same reason.
 
     :param tuple[int,int,int] volume_shape: ``(n_slices, n_rows, n_cols)`` shape

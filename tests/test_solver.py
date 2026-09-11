@@ -2,12 +2,15 @@ import pytest
 import torch
 from unittest.mock import MagicMock, patch
 
-from toolsbench.invprob.base import InvProb
+from toolsbench.invprob import CryoEIInvProb
+from toolsbench.invprob.base import InvProb, InvProbConfig
 from toolsbench.profiler import NullProfiler
 from toolsbench.solver.denoiser import DenoiserSolver
 from toolsbench.solver.pnp import PnPSolver
-from toolsbench.solver.tomo_ei import TomoEISolver
+from toolsbench.solver.equivariant import EquivariantSolver
 from toolsbench.solver.unrolled_pnp import UnrolledPnPSolver
+from toolsbench.utils.cryo import ObsLoss, build_cryo_pair
+from toolsbench.utils.solver_utils import clamp_stepsize
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -53,8 +56,8 @@ def _make_unrolled_solver(**kwargs):
     return UnrolledPnPSolver(**defaults)
 
 
-def _make_tomo_ei_solver(**kwargs):
-    """A cryo-ET solver built but never run — enough to check its setup."""
+def _make_equivariant_solver(**kwargs):
+    """An equivariant solver built but never run — enough to check its setup."""
     defaults = dict(
         problem=None,
         device=torch.device("cpu"),
@@ -64,7 +67,7 @@ def _make_tomo_ei_solver(**kwargs):
         tomography_backend="torch",
     )
     defaults.update(kwargs)
-    return TomoEISolver(**defaults)
+    return EquivariantSolver(**defaults)
 
 
 def _mock_denoiser():
@@ -409,55 +412,132 @@ class TestDenoiserSolver:
 
 
 # ---------------------------------------------------------------------------
-# TomoEISolver mixed precision
+# EquivariantSolver — both presets share one interface, so one set covers both
 # ---------------------------------------------------------------------------
 
+EQUIVARIANT_VOLUME_SIZE = (8, 4, 8)
 
-class TestTomoEISolverMixedPrecision:
-    @pytest.mark.parametrize(
-        "mixed_precision,expected_dtype",
-        [("off", None), ("fp16", torch.float16), ("bf16", torch.bfloat16)],
+
+def _equivariant_setup(preset, **kwargs):
+    """A cryo problem, its unsharded pair and the model the solver builds.
+
+    Goes through ``_setup_model`` rather than constructing the network here, so
+    the ``preset`` branch is what gets exercised.
+    """
+    problem = CryoEIInvProb().get_invprob(
+        InvProbConfig(
+            size=EQUIVARIANT_VOLUME_SIZE,
+            batch_size=1,
+            channels=1,
+            device=torch.device("cpu"),
+            params=dict(
+                num_angles=7, noise_level=0.1, seed=0, tomography_backend="torch"
+            ),
+        )
     )
-    def test_setup(self, mixed_precision, expected_dtype):
-        solver = _make_tomo_ei_solver(mixed_precision=mixed_precision)
+    pair = build_cryo_pair(
+        problem.physics,
+        problem.measurements,
+        torch.device("cpu"),
+        ctx=None,
+        num_operators=None,
+        backend="torch",
+    )
+    torch.manual_seed(0)
+    solver = _make_equivariant_solver(
+        problem=problem, preset=preset, f_maps=4, num_levels=2, **kwargs
+    )
+    model, module, _info = solver._setup_model(pair)
+    return pair, solver, model, module
 
-        assert solver._amp_dtype is expected_dtype
-        # The scaler exists on fp16 and only there: fp16 gradients underflow
-        # without a loss multiply, while bf16 shares fp32's exponent range.
-        assert (solver._scaler is not None) == (mixed_precision == "fp16")
 
-    def test_rejects_unknown(self):
-        with pytest.raises(ValueError, match="mixed_precision must be one of"):
-            _make_tomo_ei_solver(mixed_precision="fp8")
+@pytest.mark.parametrize("preset", ["tomo_ei", "unrolled"])
+class TestEquivariantSolver:
+    def test_trains_two_steps(self, preset):
+        """Two steps run: the loss stays finite and every trainable parameter
+        receives a gradient. Under ``unrolled`` that set includes ``stepsize``,
+        so no preset-specific assertion is needed."""
+        pair, solver, model, module = _equivariant_setup(
+            preset, n_iter=2, train_algo_params=True
+        )
+        trainable = [p for p in module.parameters() if p.requires_grad]
+        assert trainable
+        y_evn, y_odd = solver.problem.measurements
+        obs = ObsLoss(gain="none", ramp=True)
+        optimizer = torch.optim.Adam(module.parameters(), lr=1e-3)
 
-    def test_amp_wrapper_casts_denoiser_only(self):
-        """``_amp`` autocasts the model call and hands back fp32.
+        for _ in range(2):
+            optimizer.zero_grad(set_to_none=True)
+            x_net, y_net = solver._forward(model, pair, y_evn, y_odd)
+            loss = obs(pair, x_net, y_net, y_evn, y_odd)
+            assert torch.isfinite(loss)
+            loss.backward()
+            assert all(p.grad is not None for p in trainable)
+            optimizer.step()
 
-        The ``.float()`` is what keeps the physics and the FSC in fp32: astra
-        asserts float32 input, and ``torch.fft`` raises on bfloat16. ``"off"``
-        must be a strict no-op — the model comes back unwrapped, entering no
-        context.
+    def test_amp_keeps_physics_fp32(self, preset):
+        """The denoiser runs reduced-precision; nothing downstream does.
+
+        Both halves matter: without the dtype check on the denoiser, ``_amp``
+        could be a no-op that only calls ``.float()`` and still pass. ``A`` is
+        the thing that must never see bf16 — astra has no dtype guard.
         """
+        pair, solver, model, module = _equivariant_setup(preset, mixed_precision="bf16")
+        model = solver._amp(model)
 
-        class Probe(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.conv = torch.nn.Conv3d(1, 1, 1)
-                self.seen = None
+        inner_dtypes = []
+        conv = next(m for m in module.modules() if isinstance(m, torch.nn.Conv3d))
+        handle = conv.register_forward_hook(
+            lambda _m, _i, out: inner_dtypes.append(out.dtype)
+        )
+        seen = []
+        operator = type(pair.physics_evn)
+        original_A = operator.A
+        operator.A = lambda self, x, *a, **k: (
+            seen.append(x.dtype),
+            original_A(self, x, *a, **k),
+        )[1]
+        try:
+            y_evn, y_odd = solver.problem.measurements
+            x_net, _ = solver._forward(model, pair, y_evn, y_odd)
+        finally:
+            operator.A = original_A
+            handle.remove()
 
-            def forward(self, x):
-                out = self.conv(x)
-                self.seen = out.dtype
-                return out
+        assert inner_dtypes and set(inner_dtypes) == {torch.bfloat16}
+        assert x_net.dtype == torch.float32
+        if preset == "unrolled":
+            # tomo_ei's forward never touches A; the PGD's does, every iteration.
+            assert seen and set(seen) == {torch.float32}
 
-        volume = torch.randn(1, 1, 8, 4, 8)
 
-        model = Probe()
-        assert _make_tomo_ei_solver(mixed_precision="off")._amp(model) is model
+def test_equivariant_mixed_precision_config():
+    """The dtype map, the fp16-only scaler, and rejection of anything else."""
+    for spelling, dtype in (
+        ("off", None),
+        ("fp16", torch.float16),
+        ("bf16", torch.bfloat16),
+    ):
+        solver = _make_equivariant_solver(mixed_precision=spelling)
+        assert solver._amp_dtype is dtype
+        # fp16 gradients underflow without a loss multiply; bf16 shares fp32's
+        # exponent range, so it needs no scaler.
+        assert (solver._scaler is not None) == (spelling == "fp16")
+    with pytest.raises(ValueError, match="mixed_precision must be one of"):
+        _make_equivariant_solver(mixed_precision="fp8")
 
-        model = Probe()
-        wrapped = _make_tomo_ei_solver(mixed_precision="bf16")._amp(model)
-        assert wrapped is not model
-        out = wrapped(volume)
-        assert model.seen == torch.bfloat16  # the denoiser ran reduced-precision
-        assert out.dtype == torch.float32  # everything downstream sees fp32
+
+def test_clamp_stepsize():
+    """Clamps a trainable stepsize, no-ops on a fixed one."""
+
+    class _Model:
+        def __init__(self, stepsize):
+            self.params_algo = {"stepsize": stepsize}
+
+    trainable = torch.nn.ParameterList([torch.nn.Parameter(torch.tensor(-0.5))])
+    clamp_stepsize(_Model(trainable))
+    assert float(trainable[0].detach()) > 0
+
+    fixed = [-0.5]
+    clamp_stepsize(_Model(fixed))
+    assert fixed == [-0.5]

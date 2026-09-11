@@ -1,7 +1,7 @@
 """Synthetic cryo-ET dataset for ``tomo_ei`` training benchmarks.
 
 Single-axis tilt series of a synthetic volume, split into two interleaved
-half-sets — the synthetic stand-in for the EMPIAR-11830 setup demo_cyo trains
+half-sets — the synthetic stand-in for an EMPIAR-11830-like setup
 on. No files are read: the volume is generated and both sinograms simulated,
 so only the compute path is being measured.
 """

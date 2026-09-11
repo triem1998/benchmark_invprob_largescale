@@ -1,6 +1,6 @@
 """Fourier Shell Correlation, on GPU.
 
-Vendored verbatim from demo_cyo: toolcryo/utils/utils.py (``fsc_shell``,
+GPU Fourier shell correlation (``fsc_shell``,
 ``fsc_resolution``, ``GpuFSC``).
 """
 

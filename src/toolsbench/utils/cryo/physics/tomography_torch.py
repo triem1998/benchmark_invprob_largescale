@@ -1,13 +1,13 @@
-# Vendored verbatim from demo_cyo: toolcryo/physics/tomography_torch.py
+# Pure-torch tomography operator.
 """TomographyEMTorch — pure-PyTorch single-axis-tilt parallel-beam projector.
 
-Drop-in for the astra-based :class:`toolcryo.physics.TomographyEM` that runs on
+Drop-in for the astra-based :class:`TomographyEM` that runs on
 *any* device (CUDA, ROCm/AMD, MPS, CPU), where astra runs only on NVIDIA. Built
 from ``torch`` ops alone — ``grid_sample`` plus an FFT ramp filter. Matches astra
 to correlation ~0.999998 on the forward projection and ~1.0 on FBP; the "Sampling
 scheme" section below is why.
 
-Backend-portable because :class:`toolcryo.physics.TomographyEM` wraps
+Backend-portable because :class:`TomographyEM` wraps
 ``deepinv.physics.TomographyWithAstra``, and astra-toolbox ships CUDA kernels
 that AMD/ROCm GPUs cannot run at all. Verified by
 ``tests/test_tomography_torch.py`` (correctness + live astra parity) and measured
@@ -200,7 +200,7 @@ class _BackprojectPixelDrivenAstraGrad(torch.autograd.Function):
 
 
 class TomographyEMTorch(dinv.physics.LinearPhysics):
-    """Pure-torch drop-in for :class:`toolcryo.physics.TomographyEM`.
+    """Pure-torch drop-in for :class:`TomographyEM`.
 
     The constructor signature matches ``TomographyEM`` exactly, so the two are
     substitutable at the call site, plus three chunking knobs that only affect

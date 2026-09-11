@@ -1,4 +1,4 @@
-# Vendored from demo_cyo: toolcryo/icecream_orig/models/unet3d_bf.py
+# Vendored from the IceCream 3D U-Net (unet3d_bf.py).
 # (+ utils_bf.py merged in). Verbatim apart from the import rename.
 """
 Code From : https://github.com/wolny/pytorch-3dunet/blob/master/pytorch3dunet/unet3d/model.py

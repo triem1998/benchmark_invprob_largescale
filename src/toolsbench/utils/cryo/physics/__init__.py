@@ -1,9 +1,8 @@
 """Synthetic cryo-ET tomography physics for the ``tomo_ei`` benchmark case.
 
-The synthetic counterpart of ``toolcryo.physics.build_tomography_physics``:
-the operators, the angle sharding and the normalisation are the same, but the
-tilt angles come from a config instead of a ``.tlt`` file and the FBP init is
-computed from the simulated sinogram instead of being read from an MRC volume.
+The tilt angles come from a config rather than a ``.tlt`` file, and the FBP
+init is computed from the simulated sinogram rather than read from an MRC
+volume.
 """
 
 from __future__ import annotations
@@ -12,6 +11,7 @@ from dataclasses import dataclass, field
 
 import torch
 
+from ..utils import normalize_num_operators
 from .sharded import (
     TOMOGRAPHY_BACKENDS,
     ShardedTomography,
@@ -39,9 +39,9 @@ __all__ = [
     "split_sinogram",
 ]
 
-#: Calibrated for the EMPIAR-11830 acquisition convention in demo_cyo — the
-#: tilt sign matches IMOD's convention negated. Kept so a synthetic problem has
-#: the same geometry as the real one.
+#: Calibrated for the EMPIAR-11830 acquisition convention: the tilt sign is
+#: IMOD's convention negated. Kept so a synthetic problem has the same
+#: geometry as a real one.
 TOMO_ANGLE_SIGN = -1.0
 
 
@@ -49,9 +49,9 @@ TOMO_ANGLE_SIGN = -1.0
 class CryoEISpec:
     """Everything needed to rebuild the operators, and nothing else.
 
-    Carried through ``InvProb.physics`` as inert data: the objective never
-    calls it, and the solver builds the real operators from it, because
-    sharding needs a ``DistributedContext`` that only exists solver-side.
+    Inert data on ``InvProb.physics``: the objective never calls it, and the
+    solver builds the operators, since sharding needs a context that only
+    exists solver-side.
     """
 
     volume_shape: tuple[int, int, int]
@@ -70,12 +70,8 @@ class CryoEISpec:
 class CryoPair:
     """A volume's two half-set operators and their FBP-init volumes.
 
-    The synthetic stand-in for ``toolcryo.physics.TomographyEMPair``, minus the
-    lazy per-tomogram rebuild (one volume here, so nothing to switch to).
-
-    With ``num_operators=None`` each rank runs the full operator locally and
-    only the denoiser is tiled; otherwise the angles are sharded and every
-    ``A_adjoint``/``fbp`` costs a collective.
+    ``num_operators=None`` runs the full operator on every rank; otherwise the
+    angles are sharded and each ``A_adjoint``/``fbp`` costs a collective.
     """
 
     physics_evn: object
@@ -90,26 +86,14 @@ class CryoPair:
 def resolve_num_operators(
     num_operators: int | str | None, world_size: int, num_angles: int
 ) -> int | None:
-    """Resolve ``num_operators`` the way demo_cyo does.
+    """Resolve ``num_operators`` to a shard count.
 
-    ``None`` leaves the physics unsharded — one full operator held locally by
-    every rank, no physics collective. ``"auto"`` is one operator per rank. An
-    int is taken as given. Either way the count is capped at the tilt-angle
-    count: more shards than angles would build zero-angle operators, which the
-    operator constructors reject. On 64 ranks over 41 angles this builds 41
-    shards; the spare ranks hold no physics (deepinv supports empty ranks) but
-    still carry their denoiser tiles.
+    ``None`` leaves the physics unsharded, ``"auto"`` is one operator per rank,
+    an int is taken as given. Capped at the tilt count: more shards than angles
+    would build zero-angle operators, which the constructors reject.
     """
-    if isinstance(num_operators, str):
-        # A YAML/CLI config hands strings through: "null"/"none" is the unsharded
-        # case spelled out, "auto" is one operator per rank.
-        key = num_operators.strip().lower()
-        if key in ("none", "null"):
-            return None
-        if key != "auto":
-            raise ValueError(
-                f"num_operators must be None, 'auto' or an int, got {num_operators!r}."
-            )
+    num_operators = normalize_num_operators(num_operators)
+    if num_operators == "auto":
         num_operators = int(world_size)
     if num_operators is None:
         return None
@@ -173,10 +157,17 @@ def build_cryo_pair(
 
     ``measurements`` is the ``(y_evn, y_odd)`` pair produced by the dataset,
     each of shape ``(B, C, V, A, N)``. The inits are ``fbp(y)`` — the same
-    z-normalised starting point ``load_fbp_init`` produces from an MRC volume in
-    demo_cyo, computed here instead of read from disk.
+    z-normalised starting point an MRC volume would give, computed here rather
+    than read from disk.
     """
-    world_size = int(getattr(ctx, "world_size", 1) or 1)
+    # The *inner* group is what cooperates on this volume; with data-parallel
+    # replicas the global world size would over-shard the angles across ranks
+    # that are working on a different volume entirely. Equal when there are no
+    # replicas, which is why this went unnoticed while inner_world_size was
+    # never set.
+    world_size = int(
+        getattr(ctx, "inner_world_size", None) or getattr(ctx, "world_size", 1) or 1
+    )
     n_ops = resolve_num_operators(num_operators, world_size, spec.num_angles)
     backend = resolve_tomography_backend(backend, device)
 
@@ -216,7 +207,7 @@ def build_cryo_pair(
 
 
 def _znorm(volume: torch.Tensor) -> torch.Tensor:
-    """Centre and scale to unit std, as demo_cyo's ``load_fbp_init`` does.
+    """Centre and scale to unit std.
 
     Centring matters as much as scaling: a volume with a non-zero mean projects
     to a constant offset in ``A(x)`` that can never match a centred sinogram.

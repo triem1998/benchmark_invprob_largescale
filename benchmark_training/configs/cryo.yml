@@ -1,0 +1,49 @@
+# Cluster sweep for the cryo-ET equivariant training case: denoiser tiling x
+# angle sharding x tomography backend, at a realistic volume size, both presets.
+#
+# Loss parameters are pinned so the rows differ only in the preset and the
+# distribution axes.
+objective:
+  - reconstruction_objective
+
+dataset:
+  - cryo:
+      volume_size: [[512, 256, 512]] # [[1024, 512, 1024]]
+      num_angles: 41
+      tilt_min: -60.0
+      tilt_max: 60.0
+      noise_level: 0.1
+      seed: 42
+
+solver:
+  - Equivariant:
+      preset: ["tomo_ei", "unrolled"]
+      ## unrolled-only parameters, ignored by tomo_ei:
+      n_iter: [2] # for unrolled only; tomo_ei ignores it
+      init_stepsize: [0.9] # for unrolled only; tomo_ei ignores it
+      train_algo_params: [false] # for unrolled only; tomo_ei ignores it
+      ## all parameters, used by both presets:
+      obs_gain: ["leastsq_xnet"]
+      obs_ramp: [true]
+      eq_weight: [2.0]
+      eq_noise: [0.0]
+      eq_scale_free: [false]
+      mixed_precision: ["bf16"]
+      inner_world_size: [null]
+      cudnn_benchmark: [true]
+      patch_size: [128]
+      overlap: [16]
+      max_batch_size: [1]
+      checkpoint_batches: [auto]
+      profiler_mode: [custom]
+      profiler_per_step: [true]
+      slurm_gres, slurm_ntasks_per_node, slurm_nodes, distribute_model, num_operators, tomography_backend: [
+   
+        ["gpu:2", 2, 1, true,  null,   "astra"],
+        ["gpu:2", 2, 1, true,  null,   "torch"],
+      ]
+
+max-runs: 3
+n-repetitions: 1
+plot: true
+html: true

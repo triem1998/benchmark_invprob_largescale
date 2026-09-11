@@ -126,11 +126,23 @@ def get_device_from_context(ctx) -> torch.device:
 
 
 def sync_and_barrier(device: torch.device, ctx) -> None:
-    """Synchronize CUDA ops and issue a distributed barrier when in distributed mode."""
+    """Synchronize CUDA ops and join *every* rank before the next iteration.
+
+    ``ctx.barrier()`` defaults to the inner group. That is enough while all
+    ranks cooperate on one volume, but with data-parallel replicas it would let
+    them drift apart across iterations and make the per-iteration timings
+    incomparable, so the global group is requested explicitly.
+    """
     if device.type == "cuda":
         torch.cuda.synchronize(device)
-    if ctx is not None:
-        ctx.barrier()
+    if ctx is None:
+        return
+    group = None
+    if int(getattr(ctx, "dp_world_size", 1)) > 1:
+        import torch.distributed as dist
+
+        group = dist.group.WORLD
+    ctx.barrier(group=group)
 
 
 def distributed_callback_iter(cb, distributed_mode: bool, device: torch.device, ctx):
@@ -233,3 +245,17 @@ def profile_roofline(model, x, sigma, bytes_per_elem=4):
         mem_bytes=mem_bytes,
         arith_intensity=flops / mem_bytes if mem_bytes > 0 else 0.0,
     )
+
+
+def clamp_stepsize(model, eps: float = 1e-8) -> None:
+    """Keep a learned PGD stepsize positive after each optimizer step.
+
+    No-op when the stepsize is not trainable, so it is safe to call on any
+    unfolded model — ``solver/equivariant.py`` and ``solver/unrolled_pnp.py`` both
+    build a PGD whose ``stepsize`` can be in ``trainable_params``.
+    """
+    stepsize = model.params_algo["stepsize"]
+    if isinstance(stepsize, torch.nn.ParameterList):
+        with torch.no_grad():
+            for s in stepsize:
+                s.data.clamp_(min=eps)

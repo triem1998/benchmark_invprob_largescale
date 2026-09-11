@@ -4,7 +4,7 @@ from deepinv.distributed import DistributedContext
 
 from toolsbench.invprob.base import InvProb
 from toolsbench.profiler import create_profiler
-from toolsbench.solver.tomo_ei import TomoEISolver
+from toolsbench.solver.equivariant import EquivariantSolver
 from toolsbench.utils.solver_utils import (
     build_solver_name,
     get_device_from_context,
@@ -13,15 +13,22 @@ from toolsbench.utils.solver_utils import (
 
 
 class Solver(BaseSolver):
-    """Self-supervised cryo-ET training (one training step per iteration)."""
+    """Self-supervised cryo-ET training (one training step per iteration).
 
-    name = "TomoEI"
+    ``preset`` selects the method: a plain denoiser (``tomo_ei``) or a PGD
+    unfold (``unrolled``).
+    """
+
+    name = "Equivariant"
 
     sampling_strategy = "callback"
     # Disable convergence checking — run for exactly max_runs training steps.
     stopping_criterion = NoCriterion()
 
     parameters = {
+        # --- Method ---
+        # tomo_ei = denoise each half's FBP volume; unrolled = PGD unfold.
+        "preset": ["tomo_ei"],
         # --- Physics ---
         # auto | astra | torch | torch_exact. auto = astra where its CUDA
         # kernels can run, else torch. torch reproduces astra's approximate
@@ -34,20 +41,42 @@ class Solver(BaseSolver):
         # --- Model architecture ---
         "f_maps": [64],
         "num_levels": [4],
+        # >0 flips the UNet layer order to "crd", inserting Dropout.
+        "unet_dropout": [0.0],
         "compile_model": [False],
         # --- Loss / optimizer ---
         "eq_weight": [0.0],
+        # Rescales A(x_net) onto y's scale: none | znorm | leastsq_xnet |
+        # leastsq_xnet_frozen.
+        "obs_gain": ["none"],
+        # Weight the residual by |k|. Without it blur is cheap.
+        "obs_ramp": [True],
+        # Noise on Eq's simulated measurement, as a multiple of the measured
+        # half-set level. 0 = clean, 1 = matched.
+        "eq_noise": [0.0],
+        # z-norm both Eq operands, so Eq scores shape and Obs owns amplitude.
+        "eq_scale_free": [False],
         "learning_rate": [1e-4],
         "grad_clip": [1.0],
         # "off" = fp32; "fp16" / "bf16" autocast every denoiser pass (the
         # physics, the losses and the FSC always see fp32). Same spelling as
-        # demo_cyo. fp16 adds a GradScaler and reports amp_scale / amp_skipped:
+        # fp16 adds a GradScaler and reports amp_scale / amp_skipped:
         # a skipped step costs the same time as a taken one.
         "mixed_precision": ["off"],
         # torch.backends.cudnn.benchmark. On ROCm this drives MIOpen's kernel
         # search; leaving it off is what made conv3d backward 10-54x slower than
         # forward on MI300A. Needs ROCm >= 7 on AMD to help. See the solver.
         "cudnn_benchmark": [True],
+        # --- Unrolled only; ignored by tomo_ei ---
+        # PGD steps: the denoiser runs this many times per reconstruction, with
+        # a data-fidelity gradient between each pair. The dominant cost axis.
+        "n_iter": [2],
+        # Used directly — both physics paths end up unit spectral norm.
+        "init_stepsize": [0.9],
+        # Learn the stepsize jointly with the denoiser.
+        "train_algo_params": [False],
+        # LR for the stepsize param group; None shares `learning_rate`.
+        "stepsize_learning_rate": [None],
         # --- Metric ---
         "fsc_threshold": [0.143],
         "pixel_size": [1.0],
@@ -63,9 +92,13 @@ class Solver(BaseSolver):
         "slurm_gres": ["gpu:1"],
         "torchrun_nproc_per_node": [1],
         # --- Distributed context ---
+        # Ranks cooperating on one volume. null = all of them (tiling only).
+        # N = N ranks per volume and world/N replicas, so a step covers
+        # dp_world_size volumes: divide wall time by it before comparing.
+        "inner_world_size": [None],
         "deterministic": [False],
         # --- Logging / profiling ---
-        "name_prefix": ["tomo_ei"],
+        "name_prefix": ["equivariant"],
         "profiler_mode": ["custom"],
         "profiler_warmup": [0],
         "profiler_active": [0],
@@ -119,6 +152,7 @@ class Solver(BaseSolver):
                 cleanup=True,
                 deterministic=self.deterministic,
                 seed_offset=False,
+                inner_world_size=self.inner_world_size,
             ) as ctx:
                 self.ctx = ctx
                 self._run_with_context(cb, ctx)
@@ -139,19 +173,25 @@ class Solver(BaseSolver):
             save_file=self.profiler_save_file,
         )
         with profiler:
-            self._algo = TomoEISolver(
+            self._algo = EquivariantSolver(
                 problem=self.problem,
                 device=device,
                 profiler=profiler,
                 ctx=ctx,
                 distributed_mode=self.distributed_mode,
+                preset=self.preset,
                 tomography_backend=self.tomography_backend,
                 num_operators=self.num_operators,
                 eq_weight=self.eq_weight,
+                obs_gain=self.obs_gain,
+                obs_ramp=self.obs_ramp,
+                eq_noise=self.eq_noise,
+                eq_scale_free=self.eq_scale_free,
                 learning_rate=self.learning_rate,
                 grad_clip=self.grad_clip,
                 f_maps=self.f_maps,
                 num_levels=self.num_levels,
+                unet_dropout=self.unet_dropout,
                 compile_model=self.compile_model,
                 distribute_model=self.distribute_model,
                 patch_size=self.patch_size,
@@ -162,6 +202,10 @@ class Solver(BaseSolver):
                 pixel_size=self.pixel_size,
                 mixed_precision=self.mixed_precision,
                 cudnn_benchmark=self.cudnn_benchmark,
+                n_iter=self.n_iter,
+                init_stepsize=self.init_stepsize,
+                train_algo_params=self.train_algo_params,
+                stepsize_learning_rate=self.stepsize_learning_rate,
             )
             self._algo.run(cb)
         profiler.finalize(ctx)

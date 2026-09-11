@@ -1,7 +1,7 @@
 """Physics, losses, model and metric for the synthetic cryo-ET (``tomo_ei``) case.
 
 The problem itself is tested in ``test_invprob.py`` (``TestCryoEIInvProb``) and
-the solver in ``test_solver.py`` (``TestTomoEISolverMixedPrecision``), with the
+the solver in ``test_solver.py`` (``TestEquivariantSolver``), with the
 rest of their kind.
 
 Everything here runs on CPU with the pure-torch tomography backend: astra ships
@@ -18,11 +18,13 @@ from deepinv.distributed import DistributedContext
 from toolsbench.invprob import CryoEIInvProb
 from toolsbench.invprob.base import InvProbConfig
 from toolsbench.utils.cryo import (
+    EqLoss,
     GpuFSC,
+    ObsLoss,
+    Rotate3D,
     build_cryo_pair,
     build_unet3d,
     fsc_shell,
-    obs_loss,
     resolve_num_operators,
 )
 from toolsbench.utils.cryo.physics.sharded import projection_splits, split_sinogram
@@ -75,13 +77,20 @@ def test_split_sinogram_roundtrip(num_operators):
 
 
 @pytest.mark.parametrize("num_operators", [1, 2])
-def test_obs_loss_invariant_to_sharding(num_operators):
+@pytest.mark.parametrize("gain", ObsLoss.GAINS)
+@pytest.mark.parametrize("ramp", [False, True])
+def test_obs_loss_invariant_to_sharding(num_operators, gain, ramp):
     """A sharded stack must score exactly like the unsharded operator.
 
     This is what ``as_sinogram`` exists for: with the physics sharded, ``A``
     returns one measurement per shard instead of one sinogram, and the loss
     must not notice. Single-rank context — the shards are all local, which is
     enough to exercise the reassembly.
+
+    Every gain is covered because the least-squares variants fit ``c`` from the
+    *reassembled* sinogram: a shard-local fit would differ, and only this
+    catches it. Both ramp settings, because the ``|k|`` weighting runs along
+    the detector axis of the reassembled residual too.
     """
     problem = _invprob()
     torch.manual_seed(0)
@@ -103,7 +112,8 @@ def test_obs_loss_invariant_to_sharding(num_operators):
             if pair.num_operators is not None:
                 y_evn = split_sinogram(y_evn, pair.num_operators)
                 y_odd = split_sinogram(y_odd, pair.num_operators)
-            losses.append(obs_loss(pair, x_net, y_net, y_evn, y_odd).item())
+            loss_fn = ObsLoss(gain=gain, ramp=ramp)
+            losses.append(loss_fn(pair, x_net, y_net, y_evn, y_odd).item())
 
     assert losses[0] == pytest.approx(losses[1], rel=1e-4)
 
@@ -185,3 +195,25 @@ def test_astra_torch_parity():
     ]
     relative = (projections[0] - projections[1]).norm() / projections[0].norm()
     assert relative < 5e-2
+
+
+@pytest.mark.parametrize("num_operators", [2, 3])
+def test_eq_noise_slices_ratio_per_shard(monkeypatch, num_operators):
+    """``eq_noise`` must apply each shard its own slice of the per-angle ratio.
+
+    ``_add_noise`` walks the shards and indexes ``ratio[..., a0:a1, :]``; an
+    off-by-one there would weight the wrong tilt angles and nothing downstream
+    would complain. The draw is pinned to ones so the comparison is exact —
+    sharded and unsharded call ``randn_like`` a different number of times, so
+    the noise itself is not reproducible across the two, only its scaling.
+    """
+    monkeypatch.setattr(torch, "randn_like", torch.ones_like)
+    problem = _invprob()
+    y_evn, y_odd = problem.measurements
+    loss = EqLoss(Rotate3D(), noise=1.0)
+    ratio = loss._noise_ratio(y_evn, y_odd)
+
+    whole = loss._add_noise(y_evn, ratio)
+    shards = loss._add_noise(split_sinogram(y_evn, num_operators), ratio)
+
+    assert torch.allclose(torch.cat(list(shards), dim=3), whole, atol=1e-6)

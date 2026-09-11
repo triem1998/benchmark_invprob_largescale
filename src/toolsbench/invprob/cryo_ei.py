@@ -1,6 +1,6 @@
 """Synthetic cryo-ET half-set inverse problem for the ``tomo_ei`` case.
 
-The synthetic stand-in for the EMPIAR-11830 setup demo_cyo trains on: one
+The synthetic stand-in for an EMPIAR-11830-like setup: one
 volume, a single-axis tilt series, and the two interleaved half-sets (split1 /
 split2) whose cross-consistency makes the method self-supervised. No MRC files
 and no half-set discovery on disk — the volume is generated, the angles come
@@ -100,7 +100,7 @@ class CryoEIInvProb(BaseInvProb):
             )
         )
         volume = data["data"]
-        # Z-normalised, as demo_cyo's volumes are: a non-zero mean projects to a
+        # Z-normalised: a non-zero mean projects to a
         # constant offset in A(x) that a centred sinogram can never match.
         return (volume - volume.mean()) / (volume.std() + 1e-8)
 

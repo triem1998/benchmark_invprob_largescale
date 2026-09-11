@@ -1,4 +1,4 @@
-# Vendored verbatim from demo_cyo: toolcryo/icecream_orig/models/se_bf.py
+# Vendored from the IceCream 3D U-Net (se_bf.py).
 """
 Code from : https://github.com/wolny/pytorch-3dunet/blob/master/pytorch3dunet/unet3d/se.py
 3D Squeeze and Excitation Modules
