@@ -1,0 +1,57 @@
+# Measure the speedup of mixed precision, torch.compile and physics sharding on 4 GPUs.
+objective:
+  - reconstruction_objective
+
+dataset:
+  - cryo:
+      volume_size: [[1024, 512, 1024]]
+      num_angles: 41
+      tilt_min: -60.0
+      tilt_max: 60.0
+      noise_level: 0.1
+      seed: 42
+
+solver:
+  - Equivariant:
+      preset: ["tomo_ei"]
+      # unrolled only
+      n_iter: [2]
+      init_stepsize: [0.9]
+      train_algo_params: [false]
+      # loss
+      obs_gain: ["leastsq_xnet"]
+      obs_ramp: [true]
+      eq_weight: [2.0]
+      eq_noise: [0.0]
+      eq_scale_free: [false]
+      # from patch_size.yml
+      patch_size: [128]
+      overlap: [16]
+      # fixed
+      tomography_backend: ["auto"]
+      inner_world_size: [null]
+      cudnn_benchmark: [false]
+      distribute_model: [true]
+      max_batch_size: [1]
+      checkpoint_batches: [auto]
+      # profiling
+      profiler_mode: [custom]
+      profiler_per_step: [true]
+      profiler_warmup: [0]
+      # one change per row against the baseline, last row combines them
+      mixed_precision, compile_model, num_operators: [
+        ["off",  false, null],   # baseline
+        ["bf16", false, null],
+        ["off",  true,  null],
+        ["off",  false, "auto"],
+        ["off",  false, 2],
+        ["bf16", true,  "auto"], # combined
+      ]
+      slurm_gres, slurm_ntasks_per_node, slurm_nodes: [
+        ["gpu:4", 4, 1],
+      ]
+
+max-runs: 5
+n-repetitions: 1
+plot: true
+html: true

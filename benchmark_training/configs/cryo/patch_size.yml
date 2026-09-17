@@ -1,0 +1,55 @@
+# Find the fastest denoiser patch size and overlap that fits on 4 GPUs.
+objective:
+  - reconstruction_objective
+
+dataset:
+  - cryo:
+      volume_size: [[1024, 512, 1024]]
+      num_angles: 41
+      tilt_min: -60.0
+      tilt_max: 60.0
+      noise_level: 0.1
+      seed: 42
+
+solver:
+  - Equivariant:
+      preset: ["tomo_ei"]
+      # unrolled only
+      n_iter: [2]
+      init_stepsize: [0.9]
+      train_algo_params: [false]
+      # loss
+      obs_gain: ["leastsq_xnet"]
+      obs_ramp: [true]
+      eq_weight: [2.0]
+      eq_noise: [0.0]
+      eq_scale_free: [false]
+      # fixed (bf16 so the volume fits)
+      mixed_precision: ["bf16"]
+      compile_model: [false]
+      tomography_backend: ["auto"]
+      num_operators: [null]
+      inner_world_size: [null]
+      cudnn_benchmark: [false]
+      distribute_model: [true]
+      checkpoint_batches: [auto]
+      overlap: [16]
+      patch_size, max_batch_size: [
+        [64,  4],  #  96^3 x 4
+        [96,  2],  # 128^3 x 2
+        [128, 1],  # 160^3
+        [192, 1],  # 224^3
+        [256, 1],  # 288^3
+      ]
+      # profiling
+      profiler_mode: [custom]
+      profiler_per_step: [true]
+      profiler_warmup: [0]
+      slurm_gres, slurm_ntasks_per_node, slurm_nodes: [
+        ["gpu:4", 4, 1],
+      ]
+
+max-runs: 5
+n-repetitions: 1
+plot: true
+html: true

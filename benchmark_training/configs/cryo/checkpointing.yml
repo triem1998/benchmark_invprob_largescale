@@ -1,0 +1,60 @@
+# Find from which number of GPUs training without activation checkpointing fits and is faster than with it.
+objective:
+  - reconstruction_objective
+
+dataset:
+  - cryo:
+      volume_size: [[1024, 512, 1024]]
+      num_angles: 41
+      tilt_min: -60.0
+      tilt_max: 60.0
+      noise_level: 0.1
+      seed: 42
+
+solver:
+  - Equivariant:
+      preset: ["tomo_ei", "unrolled"]
+      # unrolled only
+      n_iter: [2]
+      init_stepsize: [0.9]
+      train_algo_params: [false]
+      # loss
+      obs_gain: ["leastsq_xnet"]
+      obs_ramp: [true]
+      eq_weight: [2.0]
+      eq_noise: [0.0]
+      eq_scale_free: [false]
+      # from patch_size.yml and speedup.yml
+      patch_size: [128]
+      overlap: [16]
+      mixed_precision: ["bf16"]
+      compile_model: [true]
+      num_operators: ["auto"]
+      # fixed
+      tomography_backend: ["auto"]
+      inner_world_size: [null]
+      cudnn_benchmark: [false]
+      distribute_model: [true]
+      # profiling
+      profiler_mode: [custom]
+      profiler_per_step: [true]
+      profiler_warmup: [0]
+      # swept
+      checkpoint_batches, max_batch_size: [
+        [never, 1],
+        [never, 2],
+        [always, 1],
+        [always, 2],
+      ]
+      slurm_gres, slurm_ntasks_per_node, slurm_nodes: [
+        ["gpu:4", 4, 1],   #  4 GPUs, 64 tiles/GPU
+        ["gpu:4", 4, 2],   #  8 GPUs, 32 tiles/GPU
+        ["gpu:4", 4, 4],   # 16 GPUs, 16 tiles/GPU
+        ["gpu:4", 4, 8],   # 32 GPUs,  8 tiles/GPU
+        ["gpu:4", 4, 16],  # 64 GPUs,  4 tiles/GPU
+      ]
+
+max-runs: 5
+n-repetitions: 1
+plot: true
+html: true
