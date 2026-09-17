@@ -106,43 +106,7 @@ class ShardedTomography(DistributedStackedLinearPhysics):
             lambda p, t, **kw: p.fbp_raw(t) * (p.n_angles / self.n_angles_total),
             gather=gather,
             reduce_op=reduce_op,
+            # anchor on mean: an empty rank stays tied to y, so it joins A's backward collective
+            graph_anchor=mean,
             **kwargs,
         )
-
-
-def measure_opnorm_sq(physics, init: torch.Tensor) -> float:
-    """``||A^T A||_2`` of a distributed (sharded) operator.
-
-    Only needed when sharding: the shards are built with ``normalize=False``
-    because each one's own norm is not the full operator's.
-
-    ``local_only=False`` runs the power iteration over the *assembled* operator,
-    communicating at each step. deepinv's default (``True``) only sums the
-    per-shard norms, an upper bound that grows with the shard count — which
-    would make the stepsize, and so the reconstruction, depend on
-    ``num_operators``. Paid once at build time, not per step.
-    """
-    # Full (B, C, D, H, W) init, not the unbatched form deepinv's docstring
-    # suggests: the power iteration feeds x0 straight into A, and astra's
-    # forward unpacks five dims.
-    return float(physics.compute_sqnorm(init, local_only=False, verbose=False))
-
-
-def normalize_sharded(physics, init: torch.Tensor) -> float:
-    """Give a sharded operator the unit spectral norm ``normalize=True`` gives
-    the unsharded one, by rescaling every shard with the *global* norm.
-
-    Scaling only the PGD stepsize by :math:`1/\\|A\\|^2` fixes the :math:`A^{T}A` term of the
-    data-fidelity gradient but leaves the :math:`A^{T}y` term off by one factor of the norm,
-    so the two paths converge to different reconstructions. Normalising the
-    operator itself makes the sharded and unsharded physics identical.
-
-    :return: the measured ``||A^T A||_2`` before normalisation (diagnostic).
-    """
-    sqnorm = measure_opnorm_sq(physics, init)
-    for p in physics.local_physics:
-        # astra holds the two knobs on its wrapper, the torch operator on itself.
-        target = getattr(p, "xray", p)
-        target.operator_norm = sqnorm**0.5
-        target.normalize = True
-    return sqnorm

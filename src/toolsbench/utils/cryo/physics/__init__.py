@@ -15,7 +15,6 @@ from ..utils import normalize_num_operators
 from .sharded import (
     TOMOGRAPHY_BACKENDS,
     ShardedTomography,
-    normalize_sharded,
     projection_splits,
     resolve_tomography_backend,
     split_sinogram,
@@ -32,7 +31,6 @@ __all__ = [
     "TomographyEMTorch",
     "build_cryo_pair",
     "build_one_operator",
-    "normalize_sharded",
     "projection_splits",
     "resolve_num_operators",
     "resolve_tomography_backend",
@@ -110,9 +108,8 @@ def build_one_operator(
 ):
     """One half's operator: a plain one, or ``num_operators`` angle shards.
 
-    Shards are built with ``normalize=False`` — a shard's own spectral norm is
-    not the assembled operator's — and are rescaled afterwards by
-    ``normalize_sharded``, so sharded and unsharded physics stay identical.
+    Shards are built with ``normalize=False`` and given the full operator's
+    norm — a shard's own norm would be wrong.
     """
     operator_cls = TOMOGRAPHY_BACKENDS[backend]
     common = dict(
@@ -121,9 +118,13 @@ def build_one_operator(
         angle_sign=spec.angle_sign,
         device=str(device),
     )
-
+    full = operator_cls(angles_deg=angles, normalize=True, **common)
     if num_operators is None:
-        return operator_cls(angles_deg=angles, normalize=True, **common)
+        return full
+    # Seeded power iteration on a local operator: same value on every rank,
+    # no collective.
+    norm = float(getattr(full, "xray", full).operator_norm)
+    del full
 
     splits = projection_splits(int(angles.numel()), int(num_operators))
 
@@ -142,6 +143,9 @@ def build_one_operator(
     physics._tilt_max = float(angles.max())
     physics.n_angles_total = int(angles.numel())
     physics.volume_shape = spec.volume_shape
+    for p in physics.local_physics:
+        target = getattr(p, "xray", p)  # astra holds the knobs on its wrapper
+        target.operator_norm, target.normalize = norm, True
     return physics
 
 
@@ -183,17 +187,8 @@ def build_cryo_pair(
         y_evn, y_odd = split_sinogram(y_evn, n_ops), split_sinogram(y_odd, n_ops)
 
     with torch.no_grad():
-        init_evn = physics_evn.fbp(y_evn)
-        init_odd = physics_odd.fbp(y_odd)
-        if n_ops is not None:
-            # A shard's norm is not the operator's, so the shards are built
-            # unnormalised and rescaled here by the measured global norm.
-            normalize_sharded(physics_evn, init_evn)
-            normalize_sharded(physics_odd, init_odd)
-            init_evn = physics_evn.fbp(y_evn)
-            init_odd = physics_odd.fbp(y_odd)
-        init_evn = _znorm(init_evn)
-        init_odd = _znorm(init_odd)
+        init_evn = _znorm(physics_evn.fbp(y_evn))
+        init_odd = _znorm(physics_odd.fbp(y_odd))
 
     return CryoPair(
         physics_evn=physics_evn,

@@ -18,7 +18,6 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from deepinv.utils.tensorlist import TensorList
-from torch.utils.checkpoint import checkpoint
 
 __all__ = ["EqLoss", "ObsLoss", "as_sinogram"]
 
@@ -70,30 +69,24 @@ class ObsLoss:
         self.weight = weight
         self.gain = gain
         self.ramp = ramp
-        self._gain_cache = None  # (init_evn, init_odd, c_odd, c_evn)
+        self._gain_cache = None  # (c_odd, c_evn), frozen mode only
 
-    def _gains(self, pair, x, y, a_odd_net, a_evn_net):
+    def _gains(self, x, y, a_odd_net, a_evn_net):
         """Least-squares ``c`` per half, under ``no_grad``.
 
-        ``leastsq_xnet_frozen`` keys its cache on the ``init_*`` tensors. One
-        volume here, so the key never changes and "frozen" means "after the
-        first step"; the keying is kept for a future multi-volume dataset.
+        ``leastsq_xnet_frozen`` fits it on the first step and holds it: one
+        volume per process.
         """
         if self.gain == "none":
             return 1.0, 1.0
-        c = self._gain_cache
-        if (
-            c is not None
-            and self.gain == "leastsq_xnet_frozen"
-            and c[0] is pair.init_evn
-            and c[1] is pair.init_odd
-        ):
-            return c[2], c[3]
+        frozen = self.gain == "leastsq_xnet_frozen"
+        if frozen and self._gain_cache is not None:
+            return self._gain_cache
         with torch.no_grad():
             c_odd = (a_odd_net * y).sum() / ((a_odd_net * a_odd_net).sum() + 1e-8)
             c_evn = (a_evn_net * x).sum() / ((a_evn_net * a_evn_net).sum() + 1e-8)
-        if self.gain == "leastsq_xnet_frozen":
-            self._gain_cache = (pair.init_evn, pair.init_odd, c_odd, c_evn)
+        if frozen:
+            self._gain_cache = (c_odd, c_evn)
         return c_odd, c_evn
 
     def __call__(self, pair, x_net, y_net, y_evn, y_odd) -> torch.Tensor:
@@ -108,11 +101,50 @@ class ObsLoss:
             zn = lambda t: (t - t.mean()) / (t.std() + 1e-8)  # noqa: E731
             r_odd, r_evn = zn(a_odd) - zn(y), zn(a_evn) - zn(x)
         else:
-            c_odd, c_evn = self._gains(pair, x, y, a_odd, a_evn)
+            c_odd, c_evn = self._gains(x, y, a_odd, a_evn)
             r_odd, r_evn = c_odd * a_odd - y, c_evn * a_evn - x
         if self.ramp:
             r_odd, r_evn = _ramp_half(r_odd), _ramp_half(r_evn)
         return self.weight * ((r_odd**2).mean() + (r_evn**2).mean())
+
+
+class _ZnMSE(torch.autograd.Function):
+    """``MSE(zn(e), zn(t))``, ``zn(x) = (x - mean) / (std + eps)``, gradient
+    through mean and std.
+
+    Backward recomputes ``z`` from the inputs, so only the inputs are saved.
+    """
+
+    @staticmethod
+    def _zn(x, eps):
+        sd = x.std().item()
+        z = torch.empty(x.shape, device=x.device, dtype=x.dtype)  # contiguous
+        return torch.sub(x, x.mean(), out=z).div_(sd + eps), sd + eps, sd
+
+    @staticmethod
+    def forward(ctx, e, t, eps=1e-8):
+        ze, _, _ = _ZnMSE._zn(e, eps)
+        zt, _, _ = _ZnMSE._zn(t, eps)
+        ctx.save_for_backward(e, t)
+        ctx.eps = eps
+        return ze.sub_(zt).pow_(2).mean()
+
+    @staticmethod
+    def backward(ctx, go):
+        e, t = ctx.saved_tensors
+        n = e.numel()
+        ze, se, sde = _ZnMSE._zn(e, ctx.eps)
+        zt, st, sdt = _ZnMSE._zn(t, ctx.eps)
+        g = torch.sub(ze, zt).mul_(2.0 * go.item() / n)  # dL/dze; dL/dzt = -g
+        mg = g.mean().item()
+        ke = torch.dot(g.view(-1), ze.view(-1)).item() / ((n - 1) * sde)
+        kt = -torch.dot(g.view(-1), zt.view(-1)).item() / ((n - 1) * sdt)
+        # (g - mean g) / s - z * k, written into the z buffers
+        return (
+            ze.mul_(-ke).add_(g, alpha=1.0 / se).sub_(mg / se),
+            zt.mul_(-kt).sub_(g, alpha=1.0 / st).add_(mg / st),
+            None,
+        )
 
 
 class EqLoss:
@@ -178,17 +210,10 @@ class EqLoss:
         return TensorList(out)
 
     def _mse(self, est: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """MSE, scale-free when asked. Checkpointed: the z-norm otherwise pins
-        eight full volumes, recomputed for ~0.15% of a step."""
+        """MSE, scale-free (see :class:`_ZnMSE`) when asked."""
         if not self.scale_free:
             return self._criteria(est, target)
-        return checkpoint(self._mse_scale_free, est, target, use_reentrant=False)
-
-    def _mse_scale_free(self, est: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """In-graph: a detached z-norm is value-invariant but not
-        gradient-invariant, leaving the shrink channel open."""
-        zn = lambda t: (t - t.mean()) / (t.std() + 1e-8)  # noqa: E731
-        return self._criteria(zn(est), zn(target))
+        return _ZnMSE.apply(est, target)
 
     def _recon(self, v_rot: torch.Tensor, physics, model, ratio) -> torch.Tensor:
         """``f`` applied to a measurement simulated from ``v_rot``.
