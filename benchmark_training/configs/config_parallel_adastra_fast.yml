@@ -1,8 +1,8 @@
 backend: submitit
 slurm_time: 7200
 slurm_stderr_to_stdout: True
-# Venv built with cines_invprob_env/install.sh ($WORK is expanded in the job).
-slurm_python: $WORK/cines_invprob_env/.venv/bin/python
+# Shared cryo environment (bench_rocm/ADASTRA_SETUP.md); expanded in the job.
+slurm_python: $SHAREDWORKDIR/env_cryo/.venv/bin/python
 slurm_additional_parameters:
   cpus-per-task: 16
   account: <your_project>   
@@ -10,7 +10,7 @@ slurm_additional_parameters:
 slurm_setup:
   # Activates the venv and loads ROCm 10, gcc and fftw. Must come first: it
   # runs `module purge`.
-  - source $WORK/cines_invprob_env/.venv/bin/activate.poverlay
+  - source $SHAREDWORKDIR/env_cryo/.venv/bin/activate.poverlay
   # No MIOpen cache, no kernel search, stable GPU memory. Use with
   # cudnn_benchmark=false. FAST picks kernels by heuristic and allocates only
   # their workspace. Same results, but ~20% slower steps than tuned kernels:

@@ -1,8 +1,8 @@
 backend: submitit
 slurm_time: 7200
 slurm_stderr_to_stdout: True
-# Venv built with cines_invprob_env/install.sh ($WORK is expanded in the job).
-slurm_python: $WORK/cines_invprob_env/.venv/bin/python
+# Shared cryo environment (bench_rocm/ADASTRA_SETUP.md); expanded in the job.
+slurm_python: $SHAREDWORKDIR/env_cryo/.venv/bin/python
 slurm_additional_parameters:
   cpus-per-task: 16
   account: <your_project>   
@@ -10,13 +10,13 @@ slurm_additional_parameters:
 slurm_setup:
   # Activates the venv and loads ROCm 10, gcc and fftw. Must come first: it
   # runs `module purge`.
-  - source $WORK/cines_invprob_env/.venv/bin/activate.poverlay
+  - source $SHAREDWORKDIR/env_cryo/.venv/bin/activate.poverlay
   # MIOpen cache on node-local /tmp (Lustre file locks time out), seeded from
   # and saved back to $MIOPEN_CACHE_STORE so the kernel search is paid once.
   # Fill it with one cudnn_benchmark=true job per new shape config, then run
   # with cudnn_benchmark=false: benchmark=true always allocates the maximum
   # search workspace, even on a cache hit (epoch-1 memory spike).
-  - export MIOPEN_CACHE_STORE=$WORK/miopen_cache
+  - export MIOPEN_CACHE_STORE=$SHAREDWORKDIR/miopen_cache
   - export MIOPEN_USER_DB_PATH=/tmp/${USER}-miopen-cache-${SLURM_JOB_ID}
   - export MIOPEN_CUSTOM_CACHE_DIR=$MIOPEN_USER_DB_PATH
   - mkdir -p $MIOPEN_CACHE_STORE
